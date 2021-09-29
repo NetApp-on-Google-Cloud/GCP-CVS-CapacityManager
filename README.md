@@ -101,7 +101,7 @@ If CLI works, but CloudFunction doesn't, check the payload string in Cloud Sched
 Are you seeing python exceptions? Most of them will return HTTP error codes which indicate infrastructure issues, usually network connection or authentication issues.
 
 ## Support
-This tool is not officially supported by NetApp and provided as-is. Run at your own risk.
+This tool is not supported by NetApp or Google and provided as-is. Run at your own risk.
 
 ### Risk assessment
 
