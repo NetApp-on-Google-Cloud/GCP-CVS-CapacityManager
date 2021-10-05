@@ -46,13 +46,13 @@ The script contains a PubSub subscriber function called *CVSCapacityManager_pubs
         "projectid":        "my-project",
         "duration":         60,
         "margin":           20,
-        "service_account":  "abcd..."
-        "dry_mode":         "yes, please"  # Optional parameter
+        "service_account":  "abcd...",
+        "dry_mode":         "yes, please"
 }
 ```
 
 *Note*: service_account is a JSON key, encoded in base64
-*Note*: dry_mode is present, script is in read-only mode. It will report indented changes, but will not change volume size. Remove to allow changes
+*Note*: dry_mode is optional. if present, script is in read-only mode. It will report indented changes, but will not change volume size. Omit to allow changes
 
 The intended way to run it is using [Google Cloud Scheduler](https://cloud.google.com/scheduler) to trigger [Google PubSub messages](https://cloud.google.com/pubsub), which are received by the script running as [Google Cloud Function](https://cloud.google.com/functions). Example:
 
