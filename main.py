@@ -212,7 +212,7 @@ def calculateNewCapacity(size: int, serviceLevel: str, duration: int, margin: in
 # Query all volumes in the project. For each volume, calculate how big it can grow within <duration>
 # considering the current used size and the max write speed determined by volumes serviceLevel
 # If calculated_size > allocted_size, resize volume to calculated_size
-def resize(project_id: str, service_account_credential: str, duration:int, margin: int, outputJSON: bool):
+def resize(project_id: str, service_account_credential: str, duration:int, margin: int, outputJSON: bool, dry_mode: bool):
     cvs = GCPCVS(project_id, service_account_credential)
     
     # Query all CVS volumes in project
@@ -225,11 +225,20 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
         quota = volume["quotaInBytes"]
         used = volume["usedBytes"]
 
+        # skip volumes which are not available
         if volume['lifeCycleState'] != 'available':
             if outputJSON == True:
                 print(json.dumps({'severity': "INFO", 'volume': name, 'message': "Volume is not available. Skipping ..."}))
             else:
                 print(f'{name:30} {"Volume is not available. Skipping ..."}')
+            continue
+
+        # active CRR Secondary volumes are resized by resizing the primary volume. Ignore
+        if volume['isDataProtection'] == True and volume['inReplication'] == True:
+            if outputJSON == True:
+                print(json.dumps({'severity': "INFO", 'volume': name, 'message': "Secondary volume in active replication. Skipping ..."}))
+            else:
+                print(f'{name:30} {"Secondary volume in active replication. Skipping ..."}')
             continue
 
         # CVS-software uses serviceLevel = "basic", which deliver 128 KiB/s/GiB
@@ -264,7 +273,7 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
         else:
             print(f'{name:30} {cvs.translateServiceLevelAPI2UI(serviceLevel):12} {used:22n} {quota:22n} {round(used / quota * 100, 1):5n} {newSize:22n} {"Yes" if enlarge else ""}')
 
-        if enlarge == True:
+        if enlarge == True and dry_mode == False:
             # Volume needs resizing. Call API  
             cvs.resizeVolumeByVolumeID("europe-west4", volume["volumeId"], newSize)
 
@@ -275,6 +284,7 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
 #         "duration":         60,               # Minutes between invocations of this script
 #         "margin":           10,               # Security margin of additional space to add in 0-100%
 #         "service_account":  "..."             # base64 encoded content of JSON key (cat json.key | base64)
+#         "dry_mode":         false             # Don't change volume sizes. Optional parameter
 #         }
 def CVSCapacityManager_pubsub(event, context):
     logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
@@ -287,12 +297,16 @@ def CVSCapacityManager_pubsub(event, context):
             duration = parameters['duration']
             margin = parameters['margin']
             service_account = parameters['service_account']
+            if 'dry_mode' in parameters:
+                dry_mode = True
+            else:
+                dry_mode = False
         except KeyError:
             return "Missing parameter", 400
 
         # for service_account, only the first 10 characters are printed
-        print(json.dumps({ 'project_id': project_id, 'duration': duration, 'margin': margin, 'service_account': service_account[0:9] + "..."}))
-        resize(project_id, service_account, duration, margin, True)
+        print(json.dumps({ 'project_id': project_id, 'duration': duration, 'margin': margin, 'dry_mode': dry_mode, 'service_account': service_account[0:9] + "..."}))
+        resize(project_id, service_account, duration, margin, True, dry_mode)
 
 def CVSCapacityManager_cli():
     locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
@@ -308,7 +322,7 @@ def CVSCapacityManager_cli():
         logging.error('ProjectID not set in DEVSHELL_PROJECT_ID. Try "export DEVSHELL_PROJECT_ID=$(gcloud config get-value project)"')
         sys.exit(1)
     else:
-        print("INFO: Project:", project_id)
+        print("Project:", project_id)
 
     # check if file with service account credentials exists
     service_account_credential = getenv('SERVICE_ACCOUNT_CREDENTIAL', None)
@@ -320,15 +334,22 @@ def CVSCapacityManager_cli():
     margin = getenv('CVS_CAPACITY_MARGIN', 20)
     # Tell script how often it is ran. Duration in minutes
     duration = getenv('CVS_CAPACITY_INTERVAL', 60)
-    logging.info(f"duration: {duration} minutes, margin: {margin}%")
+    # Dry mode. Report everything, but don't change volume sizes
+    if 'CVS_DRY_MODE' in environ:
+        dry_mode = True
+    else:
+        dry_mode = False
 
-    resize(project_id, service_account_credential, duration, margin, False)
+    print(f"Parameters: CVS_CAPACITY_INTERVAL: {duration} minutes, CVS_CAPACITY_MARGIN: {margin}%, CVS_DRY_MODE: {dry_mode}")
+
+    resize(project_id, service_account_credential, duration, margin, False, dry_mode)
 
     # Testcode for running the pub_sub function manually
     # payload = json.dumps({ 'projectid': project_id,
     #             'duration': duration,
     #             'margin': margin,
-    #             'service_account': service_account_credential
+    #             'service_account': service_account_credential,
+    #             'dry_mode': "yes"
     #             })
     # event = { 'data': base64.b64encode(payload.encode('utf-8'))}
     # CVSCapacityManager_pubsub(event, None)
