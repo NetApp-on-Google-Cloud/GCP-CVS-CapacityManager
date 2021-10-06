@@ -148,13 +148,13 @@ class GCPCVS():
     # CVS UI uses serviceLevel = (standard, premium, extreme)
     # yes, the name "standard" has two different meaning *sic*
     # CVS-SO uses serviceLevel = basic, storageClass = software and regional_ha=(true|false) and
-    # for simplicity reasons we translate it to serviceLevel = software
+    # for simplicity reasons we translate it to serviceLevel = standard-sw
     def translateServiceLevelAPI2UI(self, serviceLevel: str) -> str:
         serviceLevelsAPI = {
             "basic": "standard",
             "standard": "premium",
             "extreme": "extreme",
-            "software": "software"
+            "standard-sw": "standard-sw"
         }
         if serviceLevel in serviceLevelsAPI:
             return serviceLevelsAPI[serviceLevel]
@@ -167,7 +167,7 @@ class GCPCVS():
             "standard": "basic",
             "premium": "standard",
             "extreme": "extreme",
-            "software": "software"
+            "standard-sw": "standard-sw"
         }
         if serviceLevel in serviceLevelsUI:
             return serviceLevelsUI[serviceLevel]
@@ -182,7 +182,7 @@ class GCPCVS():
 # big enough so it doesn't run out of space meanwhile
 # Parameters:
 #  size = current volume size in B
-#  serviceLevel = name of CVS serviceLevel (basic, standard, extreme, software)
+#  serviceLevel = name of CVS serviceLevel (basic, standard, extreme, standard-sw)
 #  duration = time in minutes between script runs
 #  margin = add additional capacity security margin on top in %
 # Result:
@@ -192,7 +192,7 @@ def calculateNewCapacity(size: int, serviceLevel: str, duration: int, margin: in
     qos = { 'basic' : 16,
             'standard': 64,
             'extreme': 128,
-            'software': 128
+            'standard-sw': 128
             }
 
     if serviceLevel in qos:
@@ -241,13 +241,13 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
                 print(f'{name:30} {"Secondary volume in active replication. Skipping ..."}')
             continue
 
-        # CVS-software uses serviceLevel = "basic", which deliver 128 KiB/s/GiB
+        # CVS-standard-sw uses serviceLevel = "basic", which deliver 128 KiB/s/GiB
         # CVS-performance serviceLevel = "basic" is "Standard", which delivers 16 KiB/s/GiB
-        # to distinguish both kinds of "basic", call the CVS-software one "software"
+        # to distinguish both kinds of "basic", call the CVS-standard-sw one "standard-sw"
         if volume["storageClass"] == "hardware":
             serviceLevel = volume["serviceLevel"]
         else:
-            serviceLevel = "software"
+            serviceLevel = "standard-sw"
   
         # Calculate new size
         newSize = calculateNewCapacity(used, serviceLevel, duration, margin)
