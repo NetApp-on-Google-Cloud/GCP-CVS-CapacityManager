@@ -218,12 +218,13 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
     # Query all CVS volumes in project
     allvolumes = cvs.getVolumesByRegion("-")
     if outputJSON == False:
-        print(f'{"Name":30} {"serviceLevel":12} {"used [B]":>22} {"allocated [B]":>22} {"%used":5} {"new_allocated [B]":>22} {"Resize"}')
+        print(f'{"Name":30} {"serviceLevel":12} {"used [B]":>22} {"allocated [B]":>22} {"snapReserve":11} {"%used":5} {"new_allocated [B]":>22} {"Resize"}')
 
     for volume in allvolumes:
         name = volume["name"]
         quota = volume["quotaInBytes"]
         used = volume["usedBytes"]
+        snapReserve = volume["snapReserve"]
 
         # skip volumes which are not available
         if volume['lifeCycleState'] != 'available':
@@ -267,11 +268,12 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
                 used = used,
                 quota = quota,
                 enlarge = enlarge,
-                newSize = newSize
+                newSize = newSize,
+                snapReserve = snapReserve
             )
             print(json.dumps(entry))
         else:
-            print(f'{name:30} {cvs.translateServiceLevelAPI2UI(serviceLevel):12} {used:22n} {quota:22n} {round(used / quota * 100, 1):5n} {newSize:22n} {"Yes" if enlarge else ""}')
+            print(f'{name:30} {cvs.translateServiceLevelAPI2UI(serviceLevel):12} {used:22n} {quota:22n} {snapReserve:11n} {round(used / quota * 100, 1):5n} {newSize:22n} {"Yes" if enlarge else ""}')
 
         if enlarge == True and dry_mode == False:
             # Volume needs resizing. Call API  
