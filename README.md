@@ -13,9 +13,9 @@ Since the service level and the size of a volume determine maximum write speed, 
 
 If the script is executed at the same scheduling interval specified in *duration*, the volume will always be big enough to avoid out-of-space conditions.
 
-It can be run in a traditional way, scheduling it via cronjob on a VM, or in a complete serverless way.
+It can be run in a traditional way, scheduled via cronjob on a VM, or in a complete serverless way.
 
-On GCP, the recommended approach is to use Google Cloud Scheduler to trigger Pub/Sub messages, which are received by the script running as Cloud Functions.
+On GCP, the recommended approach is to use Google Cloud Scheduler to trigger Pub/Sub messages, which are received by the script running as Cloud Function.
 
 ![](images/serverless.png)
 
