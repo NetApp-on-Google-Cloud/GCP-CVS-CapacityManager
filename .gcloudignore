@@ -14,4 +14,7 @@
 .gitignore
 
 node_modules
+LICENSE
+README.md
+images/
 #!include:.gitignore

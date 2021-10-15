@@ -1,5 +1,7 @@
 # GCP-CVS-CapacityManager
 
+![GCP + NTAP](images/GCP+NTAP.png)
+
 A script to resize [Cloud Volumes Service (CVS)](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/overview?hl=en_US) volumes on GCP to avoid running into out-of-space conditions.
 
 ## Concept
@@ -11,7 +13,11 @@ Since the service level and the size of a volume determine maximum write speed, 
 
 If the script is executed at the same scheduling interval specified in *duration*, the volume will always be big enough to avoid out-of-space conditions.
 
-Using Google Cloud Scheduler, PubSub and Cloud Functions, this process can be automated.
+It can be run in a traditional way, scheduling it via cronjob on a VM, or in a complete serverless way.
+
+On GCP, the recommended approach is to use Google Cloud Scheduler to trigger Pub/Sub messages, which are received by the script running as Cloud Functions.
+
+![](images/serverless.png)
 
 ## Usage
 
@@ -28,6 +34,8 @@ The script expects the 4 arguments via environment variables. Example:
 
 ```bash
 # Make sure python3.6 or later environment exists on your machine
+git clone https://github.com/NetApp-on-Google-Cloud/GCP-CVS-CapacityManager.git
+cd GCP-CVS-CapacityManager
 pip3 install -r requirements.txt
 export DEVSHELL_PROJECT_ID=$(gcloud config get-value project)
 export CVS_CAPACITY_INTERVAL=60 # default is 60 minutes
@@ -39,7 +47,9 @@ python3 ./main.py
 
 ### PubSub message
 
-The script contains a PubSub subscriber function called *CVSCapacityManager_pubsub*. It expects payload like:
+The script contains a PubSub subscriber function called *CVSCapacityManager_pubsub*. 
+
+It expects payload like:
 
 ```json
 {
@@ -58,6 +68,9 @@ The script contains a PubSub subscriber function called *CVSCapacityManager_pubs
 The intended way to run it is using [Google Cloud Scheduler](https://cloud.google.com/scheduler) to trigger [Google PubSub messages](https://cloud.google.com/pubsub), which are received by the script running as [Google Cloud Function](https://cloud.google.com/functions). Example:
 
 ```bash
+git clone https://github.com/NetApp-on-Google-Cloud/GCP-CVS-CapacityManager.git
+cd GCP-CVS-CapacityManager
+
 # Create new PubSub topic
 topic=CVSCapacityManager
 gcloud pubsub topics create $topic
@@ -84,6 +97,7 @@ gcloud scheduler jobs create pubsub CVSCapacityManager-job --schedule="0 * * * *
 ```
 
 ## Notes
+* Setting up Cloud Monitoring for volume space usage is recommended. See [Monitoring cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US)
 * The script uses [NetApp Cloud Volumes Service API](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US) to query volume data and set new volume size
 * Only volumes with *lifeCycleState = available* are considered, all others are ignored
 * Secondary volumes in an *active* CRR relationship are ignored. Resize primary volume to automatically resize secondary volume
@@ -121,7 +135,11 @@ It only does read operations, except when growing a volume. To grow a volume, it
 *Note:* Larger volumes incur more monthly costs.
 
 ### Getting help
-If you have any issues, please check logs first. When ran as Cloud Function, it will log a line for each volume to Cloud Logging. Any indication why it fails? Make sure to pass the parameters correctly.
+If you have any issues, please check logs first.
+
+Most likely issue is authentication issues, which will result in HTTP errors (sometimes hidden in multiple lines of python exception output). Make sure the credentials are correctly passed.
+
+When ran as Cloud Function, it will log a line for each volume to Cloud Logging. Any indication why it fails? Make sure to pass the parameters correctly.
 
 Next, check the issue section of this repository to see if it is a known issue.
 
