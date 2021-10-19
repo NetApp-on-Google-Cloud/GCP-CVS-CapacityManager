@@ -4,7 +4,7 @@
 # If threshold is passed, an incident is sent to the configured
 # notification channels
 #
-# usage_ration = volume_used / volume_allocated
+# usage_ratio = volume_used / volume_allocated
 # See https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US
 # for list of available metrics
 #
