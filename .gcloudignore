@@ -17,4 +17,5 @@ node_modules
 LICENSE
 README.md
 images/
+.temp.yaml
 #!include:.gitignore

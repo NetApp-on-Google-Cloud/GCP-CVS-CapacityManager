@@ -118,12 +118,23 @@ class GCPCVS():
         return f"CVS: Project: {self.project}\nService Account: {self.service_account}\n"
 
     # returns list with dicts of all volumes in specified region ("-" for all regions)
-    def getVolumesByRegion(self, region: str) -> list:
+    def getVolumesByRegion(self, region: str) -> list[dict]:
         logging.info(f"getVolumesByRegion {region}")
         r = requests.get(f"{self.baseurl}/locations/{region}/Volumes", headers=self.headers, auth=self.token)
         r.raise_for_status()
         return r.json()
-        
+
+    # returns volumes with volumeID in specified region
+    def getVolumesByVolumeID(self, region: str, volumeID: str) -> dict:
+        logging.info(f"getVolumesByVolumeID {region}, {volumeID}")
+        r = requests.get(f"{self.baseurl}/locations/{region}/Volumes", headers=self.headers, auth=self.token)
+        r.raise_for_status()
+        vols = [volume for volume in r.json() if volume["volumeId"] == volumeID]
+        if len(vols) == 1:
+            return vols[0]
+        else:
+            return None
+
     # modify a volume
     # pass in dict with API field to modify
     # used by more specialized methods
@@ -276,21 +287,113 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
             print(f'{name:30} {cvs.translateServiceLevelAPI2UI(serviceLevel):12} {used:22n} {quota:22n} {snapReserve:11n} {round(used / quota * 100, 1):5n} {newSize:22n} {"Yes" if enlarge else ""}')
 
         if enlarge == True and dry_mode == False:
-            # Volume needs resizing. Call API  
-            cvs.resizeVolumeByVolumeID("europe-west4", volume["volumeId"], newSize)
+            # Volume needs resizing. Call API
+            cvs.resizeVolumeByVolumeID(volume["region"], volume["volumeId"], newSize)
 
-# Receiver function for Cloud Function PubSub
-# expected payload in data:
-#   data = {
-#         "projectid":        "my-project",     # Project ID
-#         "duration":         60,               # Minutes between invocations of this script
-#         "margin":           10,               # Security margin of additional space to add in 0-100%
-#         "service_account":  "..."             # base64 encoded content of JSON key (cat json.key | base64)
-#         "dry_mode":         false             # Don't change volume sizes. Optional parameter
-#         }
-def CVSCapacityManager_pubsub(event, context):
+def CVSCapacityManager_alert_event(event, context):
+    """ Receives PubSub messages from Cloud alerts and resizes volume
+    
+        see /Alerting/cvs-Alerting.tf for alert definition
+        
+        Parameters passed via environment:
+            SERVICE_ACCOUNT_CREDENTIAL = base64 encoded content of JSON key (cat json.key | base64)
+            CVS_CAPACITY_MARGIN = % of free capacity requested, comapred to current volume allocation. Default 20
+            CVS_DRY_MODE = optional parameter. If present, only report, but don't resize
+        Parameters passed via PubSub:
+            data.incident.resource.project_id = ProjectId - only used for reporting
+            data.incident.resource.resource_container = ProjectNumber - used for API calls
+            data.incident.resource.location = region - used for API calls
+            data.incident.resource.volume_id = volume_id - used for API calls
+            data.incident.resource.name = volume name - only used for reporting     
+    """
+
     logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
 
+    # If environment variables are set, we use environment for parameters instead of JSON payload
+    if 'SERVICE_ACCOUNT_CREDENTIAL' in environ:
+        service_account = getenv('SERVICE_ACCOUNT_CREDENTIAL', None)
+        margin = int(getenv('CVS_CAPACITY_MARGIN', 20))
+        if 'CVS_DRY_MODE' in environ:
+            dry_mode = True
+        else:
+            dry_mode = False
+
+        print(json.dumps({'parameter_source': 'environment', 'margin': margin, 'dry_mode': dry_mode, 'service_account': service_account[0:9] + "..."}))
+
+        # Get volume detail from alert event
+        if 'data' in event:
+            payload = json.loads(base64.b64decode(event['data']).decode('utf-8'))
+
+            try:
+                parameters = payload['incident']['resource']['labels']
+                project_id = parameters['project_id']
+                project_number = parameters['resource_container']
+                region = parameters['location']
+                volume_id = parameters['volume_id']
+                volumeName = parameters['name']
+            except KeyError:
+                return "PubSub payload is missing parameters. Is it really a Cloud Monitoring alert?", 400
+
+            print(json.dumps({'parameter_source': 'pubsub', 'project_id': project_id, 'project_number': project_number, 'region': region, 'name': volumeName, 'UUID': volume_id}))
+            # resize(project_id, service_account, duration, margin, True, dry_mode)
+
+            # resize the volume
+            if dry_mode == False:
+                # Volume needs resizing. Call API
+                cvs = GCPCVS(project_id, service_account)
+                volume = cvs.getVolumesByVolumeID(region, volume_id)
+                if volume == None:
+                    return f"Cannot find volume {volume_id} in region {region}", 400
+                if volume['isDataProtection'] == True and volume['inReplication'] == True:
+                    print(json.dumps({'severity': "INFO", 'volume': volumeName, 'message': "Secondary volume in active replication. Skipping ..."}))
+                else:
+                    oldSize = volume["quotaInBytes"]
+                    newSize = int(oldSize * 100 / (100 - margin))
+                    # Round up to full GiB
+                    newSize = int(newSize / 1024**3 + 1) * 1024**3
+                    cvs.resizeVolumeByVolumeID(region, volume_id, newSize)
+                    print(json.dumps({'newSize': newSize, 'oldSize': oldSize, 'margin': margin, 'project_id': project_id, 'project_number': project_number, 'region': region, 'name': volumeName, 'UUID': volume_id}))
+        else:
+            print(json.dumps({'severity': "INFO", 'message': "No PubSub event data received."}))
+        return
+        
+    return "Missing parameters - no action", 400
+
+
+def CVSCapacityManager_pubsub(event, context):
+    """ PubSub receiver function for Cloud Function
+
+        Receives an envent via PubSub. Will query all volumes in the project and
+        resize them if they are might run full until the next invocation
+
+        Parameters passed via environment:
+            DEVSHELL_PROJECT_ID = projectId or projectNumber
+            SERVICE_ACCOUNT_CREDENTIAL = base64 encoded content of JSON key (cat json.key | base64)
+            CVS_CAPACITY_INTERVAL = Time in minutes between invocations
+            CVS_CAPACITY_MARGIN = Capacity in % to add on current volume allocation
+            CVS_DRY_MODE = optional parameter. If present, only report, but don't resize
+
+        It also supports a way to pass parameters using a JSON payload. DEPRECATED. Please stop using it.
+    """
+
+    logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
+
+    # If environment variables are set, we use environment for parameters instead of JSON payload
+    if {'DEVSHELL_PROJECT_ID', 'SERVICE_ACCOUNT_CREDENTIAL'} <= set(environ):
+        project_id = getenv('DEVSHELL_PROJECT_ID', None)
+        service_account = getenv('SERVICE_ACCOUNT_CREDENTIAL', None)
+        duration = int(getenv('CVS_CAPACITY_INTERVAL', 60))
+        margin = int(getenv('CVS_CAPACITY_MARGIN', 20))
+        if 'CVS_DRY_MODE' in environ:
+            dry_mode = True
+        else:
+            dry_mode = False
+
+        print(json.dumps({'parameter_mode': 'environment', 'project_id': project_id, 'duration': duration, 'margin': margin, 'dry_mode': dry_mode, 'service_account': service_account[0:9] + "..."}))
+        resize(project_id, service_account, duration, margin, True, dry_mode)
+        return      
+
+    # legacy way using JSON payload. DEPRECATED
     if 'data' in event:
         parameters = json.loads(base64.b64decode(event['data']).decode('utf-8'))
         
@@ -304,11 +407,14 @@ def CVSCapacityManager_pubsub(event, context):
             else:
                 dry_mode = False
         except KeyError:
-            return "Missing parameter", 400
+            return "JSON payload: Missing parameter", 400
 
         # for service_account, only the first 10 characters are printed
-        print(json.dumps({ 'project_id': project_id, 'duration': duration, 'margin': margin, 'dry_mode': dry_mode, 'service_account': service_account[0:9] + "..."}))
+        print(json.dumps({'parameter_mode': 'payload', 'project_id': project_id, 'duration': duration, 'margin': margin, 'dry_mode': dry_mode, 'service_account': service_account[0:9] + "..."}))
         resize(project_id, service_account, duration, margin, True, dry_mode)
+        return
+
+    return "Missing parameters - no action", 400
 
 def CVSCapacityManager_cli():
     locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')

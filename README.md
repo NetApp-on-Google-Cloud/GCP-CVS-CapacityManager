@@ -5,6 +5,10 @@
 A script to resize [Cloud Volumes Service (CVS)](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/overview?hl=en_US) volumes on GCP to avoid running into out-of-space conditions.
 
 ## Concept
+There are three ways to run the script:
+
+### CLI or schedules via Cloud Scheduler
+
 Whenever the script runs, it enumerates all volumes in the specified project. For each volume, it determines the used size (numbers of bytes consumed by data) and the quota (size of the volume as set by user).
 
 The user  needs to specify the *interval* the script is invoked and an optional security *margin*.
@@ -19,18 +23,26 @@ On GCP, the recommended approach is to use Google Cloud Scheduler to trigger Pub
 
 ![](images/serverless.png)
 
+### Event driven via Cloud Monitoring alerts
+
+CVS documentation recommends to implement [Monitoring of cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US). Users can setup an alert policy to monitor volume free space. If usage ratio goes over a threshold, Cloud Monitoring will trigger an incident. Incidents can be sent to multiple notification channels. Using PubSub as notification channel, incidents (events) can be sent to this script running as Cloud Function.
+
+Running in this special mode, only the volume sent by PubSub event will be resized. New size will newSize = current_allocated_size * 100 / (100 - margin).
+
 ## Usage
 
-The script can be invoked via CLI or via a PubSub message. Independent of invokation type, 4 arguments need to be provided:
+The script can be invoked via CLI or via a PubSub message. Independent of invocation type, 4 arguments are needed as input:
 
 * **projectid**: GCP project ID (e.g my-project) or GCP project number (e.g. 1234567890). If project ID is specified, the script needs *resourcemanager.projects.get* permissions. Otherwise use project number
 * **duration**: Time interval in minutes the script will be called (e.g. 60 for every 60 minutes)
-* **margin**: Additional security margin in %. The script calculates the new target size and will adds *margin* % on top of it
+* **margin**: In triggered mode, it specifies additional security margin in % which will be added on top of the calculated size. For event based invocation, newSize = current_allocated_size * 100 / (100 - margin)
 * **service_account**: A base64 encoded JSON key for an [IAM service account](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US) which has *roles/netappcloudvolumes.admin*. Use ```cat key.json | base64``` to generate it. Goal is to eventually use service account impersonation, but we need to stick with passing credentials for now
 * **dry_mode**: If present, script will only report intended actions, but will not change volume sizes
 
+For Cloud Monitoring alert event based invocation, projectid will be provided by the PubSub event and doesn't need to be specified.
+
 ### CLI
-The script expects the 4 arguments via environment variables. Example:
+The script takes the 5 arguments via environment variables. Example:
 
 ```bash
 # Make sure python3.6 or later environment exists on your machine
@@ -45,25 +57,11 @@ export CVS_DRY_MODE="whatever" # To allow changes "unset CVS_DRY_MODE"
 python3 ./main.py
 ```
 
-### PubSub message
+### PubSub message triggered
 
-The script contains a PubSub subscriber function called *CVSCapacityManager_pubsub*. 
+The script contains a PubSub subscriber function *CVSCapacityManager_pubsub* for tiggered execution, e.g. via Cloud Scheduler
 
-It expects payload like:
-
-```json
-{
-        "projectid":        "my-project",
-        "duration":         60,
-        "margin":           20,
-        "service_account":  "abcd...",
-        "dry_mode":         "yes, please"
-}
-```
-
-*Note*: service_account is a JSON key, encoded in base64
-
-*Note*: dry_mode is optional. if present, script is in read-only mode. It will report indented changes, but will not change volume size. Omit to allow changes
+Parameters are passed via environment variables to the Cloud Function.
 
 The intended way to run it is using [Google Cloud Scheduler](https://cloud.google.com/scheduler) to trigger [Google PubSub messages](https://cloud.google.com/pubsub), which are received by the script running as [Google Cloud Function](https://cloud.google.com/functions). Example:
 
@@ -81,19 +79,60 @@ gcloud pubsub topics create $topic
 serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
 
 # Deploy Cloud Function
-gcloud functions deploy CVSCapacityManager --entry-point CVSCapacityManager_pubsub --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount
+# add "CVS_DRY_MODE: x" to enable dry mode, omit CVS_DRY_MODE to active volume resizing
+cat <<EOF > .temp.yaml
+DEVSHELL_PROJECT_ID: $(gcloud config get-value project)
+CVS_CAPACITY_MARGIN: "20"
+CVS_CAPACITY_INTERVAL: "60"
+SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
+CVS_DRY_MODE: x
+EOF
+gcloud functions deploy CVSCapacityManager --entry-point CVSCapacityManager_pubsub --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp.yaml
+rm .temp.yaml
 
 # Setup Cloud Scheduler
-# run every hour (60 minutes), margin 20%
-IFS='' read -r -d '' payload <<EOF
-{
-        "projectid":        "$(gcloud config get-value project)",
-        "duration":         60,
-        "margin":           20,
-        "service_account":  "$(cat key.json | base64)"
-}
+# run every hour (60 minutes)
+gcloud scheduler jobs create pubsub CVSCapacityManager-job --schedule="0 * * * *" --time-zone="Etc/UTC" --topic=$topic
+```
+
+### Cloud Monitoring alert triggered
+
+The script contains a PubSub subscriber function *CVSCapacityManager_alert_event* which is intended to be triggered by a Cloud Monitoring alert.
+
+Parameters are passed via environment variables to the Cloud Function.
+
+The intended way to run it is use a alert as described in [Monitoring cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US). Configure PubSub as notification channel and attach this script running as [Google Cloud Function](https://cloud.google.com/functions) to the PubSub topic.
+
+Warning: The Cloud Function is only triggered once, if threshold is breached. Make sure your margin adds enough space to get the volume under the threshold (e.g. 20% margin for a 80% threshold), otherwise volume stays above threshold and resizing will not be triggered again. Sizind advice: margin >= 100-threshold. e.g for a threshold at 80%, margin should be set >= 20%
+
+Example:
+```bash
+git clone https://github.com/NetApp-on-Google-Cloud/GCP-CVS-CapacityManager.git
+cd GCP-CVS-CapacityManager
+
+# Make sure to setup Cloud Monitoring alert policy. Send incidents to a PubSub notification channel.
+# Make sure Cloud Monitoring service account is allowed to send messages to PubSub
+# See https://cloud.google.com/monitoring/support/notification-options#pubsub
+
+topic=CVSCapacityManager
+
+# Verify topic exists
+gcloud pubsub topics describe $topic
+
+# Set serviceAccount to name of service account with cloudvolumes.admin permissions (see https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US). This can later be used for service account impersonation, but is currently defunct.
+# Provide JSON key to this service account in a file named key.json
+# serviceAccount=$(cat key.json | jq '.client_email')
+serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
+
+# Deploy Cloud Function
+# add "CVS_DRY_MODE: x" to enable dry mode, omit CVS_DRY_MODE to active volume resizing
+cat <<EOF > .temp.yaml
+CVS_CAPACITY_MARGIN: "20"
+SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
+CVS_DRY_MODE: x
 EOF
-gcloud scheduler jobs create pubsub CVSCapacityManager-job --schedule="0 * * * *" --time-zone="Etc/UTC" --topic=$topic --message-body=$payload
+gcloud functions deploy CVSCapacityManager --entry-point CVSCapacityManager_alert_event --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp.yaml
+rm .temp.yaml
 ```
 
 ## Notes
@@ -121,7 +160,7 @@ Also consider running in dry-mode:
 export CVS_DRY_MODE=true
 ```
 
-If CLI works, but CloudFunction doesn't, check the payload string in Cloud Scheduler first. Does it have a projectID? Have you tried project number instead of projectID? Is the service account key empty? Is it correct (try as base64 decode to see if it returns a proper key).
+If CLI works, but CloudFunction doesn't, check the the logs of the cloud function. The script will log parameters on invocation. Verify if they reflect you intentions.
 
 Are you seeing python exceptions? Most of them will return HTTP error codes which indicate infrastructure issues, usually network connection or authentication issues.
 
