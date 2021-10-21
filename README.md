@@ -142,7 +142,7 @@ rm .temp.yaml
 * Secondary volumes in an *active* CRR relationship are ignored. Resize primary volume to automatically resize secondary volume
 * Snapshot space handling: The script uses the usedBytes API parameter. It includes all active data, metadata and snapshot blocks
 * SnapReserve handling: *snapReserve* only impacts the amount of space presented to the client via df/statvfs (e.g 2000 GiB volume, snapReserve 20%, client only sees 1600 GiB). The script uses *usedBytes*, which isn't influenced by *snapReserve*
-* If target volume size is larger than [maximum volume size](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/resource-limits-quotas?hl=en_US), behaviour is unknown. Will either fail or resize to maximum size, depending on what CVS API will do. Not tested.
+* If target volume size is larger than [maximum volume size](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/resource-limits-quotas?hl=en_US), new volume size will be set to 100 TiB
 * For host/service projects, run the script in each service/host project with provisioned volumes
 * Script is developed and tested with Python 3.9 on MacOS and Linux
 
