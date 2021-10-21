@@ -324,14 +324,18 @@ def CVSCapacityManager_alert_event(event, context):
         if 'data' in event:
             payload = json.loads(base64.b64decode(event['data']).decode('utf-8'))
 
-            try:
+            try:                    
                 parameters = payload['incident']['resource']['labels']
                 project_id = parameters['project_id']
                 project_number = parameters['resource_container']
                 region = parameters['location']
                 volume_id = parameters['volume_id']
                 volumeName = parameters['name']
+                if payload['incident']['state'] == "closed":
+                    print(json.dumps({'severity': "INFO", 'name': volumeName, 'UUID': volume_id, 'message': "Incident resolved"}))
+                    return
             except KeyError:
+                print("PubSub payload is missing parameters. Is it really a Cloud Monitoring alert?")
                 return "PubSub payload is missing parameters. Is it really a Cloud Monitoring alert?", 400
 
             print(json.dumps({'parameter_source': 'pubsub', 'project_id': project_id, 'project_number': project_number, 'region': region, 'name': volumeName, 'UUID': volume_id}))
@@ -343,6 +347,7 @@ def CVSCapacityManager_alert_event(event, context):
                 cvs = GCPCVS(project_id, service_account)
                 volume = cvs.getVolumesByVolumeID(region, volume_id)
                 if volume == None:
+                    print("Cannot find volume {volume_id} in region {region}")
                     return f"Cannot find volume {volume_id} in region {region}", 400
                 if volume['isDataProtection'] == True and volume['inReplication'] == True:
                     print(json.dumps({'severity': "INFO", 'volume': volumeName, 'message': "Secondary volume in active replication. Skipping ..."}))
@@ -357,7 +362,8 @@ def CVSCapacityManager_alert_event(event, context):
             print(json.dumps({'severity': "INFO", 'message': "No PubSub event data received."}))
         return
         
-    return "Missing parameters - no action", 400
+    print("Missing environment parameters - no action")
+    return "Missing environment parameters - no action", 400
 
 
 def CVSCapacityManager_pubsub(event, context):
