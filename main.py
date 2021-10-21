@@ -19,6 +19,7 @@ import json
 import locale
 from os import getenv, environ
 import base64
+from typing import NewType
 import requests
 import re
 from googleapiclient import discovery, errors
@@ -265,6 +266,12 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
         newSize = calculateNewCapacity(used, serviceLevel, duration, margin)
         if newSize > quota:
             enlarge = True
+            if newSize > 100*1024**4:
+                if outputJSON == True:
+                    print(json.dumps({'severity': "WARNING", 'volume': name, 'message': "Resizing capped to 100 TiB"}))
+                else:
+                    print("Resizing capped to 100 TiB")
+                newSize = 100*1024**4
         else:
             newSize = quota
             enlarge = False
@@ -335,11 +342,10 @@ def CVSCapacityManager_alert_event(event, context):
                     print(json.dumps({'severity': "INFO", 'name': volumeName, 'UUID': volume_id, 'message': "Incident resolved"}))
                     return
             except KeyError:
-                print("PubSub payload is missing parameters. Is it really a Cloud Monitoring alert?")
+                print(json.dumps({'severity': "ERROR", 'message': "PubSub payload is missing parameters. Is it really a Cloud Monitoring alert?"}))
                 return "PubSub payload is missing parameters. Is it really a Cloud Monitoring alert?", 400
 
             print(json.dumps({'parameter_source': 'pubsub', 'project_id': project_id, 'project_number': project_number, 'region': region, 'name': volumeName, 'UUID': volume_id}))
-            # resize(project_id, service_account, duration, margin, True, dry_mode)
 
             # resize the volume
             if dry_mode == False:
@@ -347,7 +353,7 @@ def CVSCapacityManager_alert_event(event, context):
                 cvs = GCPCVS(project_id, service_account)
                 volume = cvs.getVolumesByVolumeID(region, volume_id)
                 if volume == None:
-                    print("Cannot find volume {volume_id} in region {region}")
+                    print(json.dumps({'severity': "ERROR", 'message': f"Cannot find volume {volume_id} in region {region}"}))
                     return f"Cannot find volume {volume_id} in region {region}", 400
                 if volume['isDataProtection'] == True and volume['inReplication'] == True:
                     print(json.dumps({'severity': "INFO", 'volume': volumeName, 'message': "Secondary volume in active replication. Skipping ..."}))
@@ -356,13 +362,17 @@ def CVSCapacityManager_alert_event(event, context):
                     newSize = int(oldSize * 100 / (100 - margin))
                     # Round up to full GiB
                     newSize = int(newSize / 1024**3 + 1) * 1024**3
+                    # max volume size is 100TiB. cap at 100TiB
+                    if newSize > 100*1024**4:
+                        print(json.dumps({'severity': "WARNING", 'volume': volumeName, 'message': "Resizing capped to 100 TiB"}))
+                        newSize = 100*1024**4
                     cvs.resizeVolumeByVolumeID(region, volume_id, newSize)
                     print(json.dumps({'newSize': newSize, 'oldSize': oldSize, 'margin': margin, 'project_id': project_id, 'project_number': project_number, 'region': region, 'name': volumeName, 'UUID': volume_id}))
         else:
-            print(json.dumps({'severity': "INFO", 'message': "No PubSub event data received."}))
+            print(json.dumps({'severity': "ERROR", 'message': "No PubSub event data received."}))
         return
         
-    print("Missing environment parameters - no action")
+    print(json.dumps({'severity': "ERROR", 'message': "Missing environment parameters - no action"}))
     return "Missing environment parameters - no action", 400
 
 
