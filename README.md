@@ -29,6 +29,10 @@ CVS documentation recommends to implement [Monitoring of cloud volumes](https://
 
 Running in this special mode, only the volume sent by PubSub event will be resized. New size will newSize = current_allocated_size * 100 / (100 - margin).
 
+![](images/serverless.png)
+
+[cvs-Alerting.tf](Alerting/cvs-Alerting.tf) contains a Terraform example for an alert policy.
+
 ## Usage
 
 The script can be invoked via CLI or via a PubSub message. Independent of invocation type, 4 arguments are needed as input:
@@ -105,7 +109,15 @@ The intended way to run it is use a alert as described in [Monitoring cloud volu
 
 Warning: The Cloud Function is only triggered once, if threshold is breached. Make sure your margin adds enough space to get the volume under the threshold (e.g. 20% margin for a 80% threshold), otherwise volume stays above threshold and resizing will not be triggered again. Sizind advice: margin >= 100-threshold. e.g for a threshold at 80%, margin should be set >= 20%
 
-Example:
+Example screenshot of event-based invocation in action:
+
+![](images/event-example.png)
+
+Please note:
+Cloud Monitoring metrics are pushed every 300 seconds. It can take up to 5 minutes for an incident to be triggered. After incident was triggered and reszingin of volume happened, it takes another 5 minutes for these changes to be reflected in Cloud Monitoring.
+
+
+Set-up Example:
 ```bash
 git clone https://github.com/NetApp-on-Google-Cloud/GCP-CVS-CapacityManager.git
 cd GCP-CVS-CapacityManager
