@@ -147,7 +147,7 @@ cat <<EOF > .temp-event.yaml
 CVS_CAPACITY_MARGIN: "20"
 SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
 EOF
-gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp.yaml
+gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp-event.yaml
 rm .temp-event.yaml
 ```
 
