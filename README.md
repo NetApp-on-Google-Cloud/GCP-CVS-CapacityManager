@@ -79,8 +79,8 @@ gcloud pubsub topics create $topic
 
 # Set serviceAccount to name of service account with cloudvolumes.admin permissions (see https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US). This can later be used for service account impersonation, but is currently defunct.
 # Provide JSON key to this service account in a file named key.json
-# serviceAccount=$(cat key.json | jq '.client_email')
-serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
+serviceAccount=$(cat key.json | jq -r '.client_email')
+# serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
 
 # Deploy Cloud Function
 # add "CVS_DRY_MODE: x" to enable dry mode, omit CVS_DRY_MODE to active volume resizing
@@ -107,7 +107,9 @@ Parameters are passed via environment variables to the Cloud Function.
 
 The intended way to run it is use a alert as described in [Monitoring cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US). Configure PubSub as notification channel and attach this script running as [Google Cloud Function](https://cloud.google.com/functions) to the PubSub topic.
 
-Warning: The Cloud Function is only triggered once, if threshold is breached. Make sure your margin adds enough space to get the volume under the threshold (e.g. 20% margin for a 80% threshold), otherwise volume stays above threshold and resizing will not be triggered again. Sizind advice: margin >= 100-threshold. e.g for a threshold at 80%, margin should be set >= 20%
+Warning:
+* The Cloud Function is only triggered once, if threshold is breached. Make sure your margin adds enough space to get the volume under the threshold (e.g. 20% margin for a 80% threshold), otherwise volume stays above threshold and resizing will not be triggered again. Sizind advice: margin >= 100-threshold. e.g for a threshold at 80%, margin should be set >= 20%
+* Events created before the Cloud Function did subscribe to the PubSub topic are lost. You need to resize the volumes in advance, e.g. by using the CLI way
 
 Example screenshot of event-based invocation in action:
 
@@ -125,26 +127,28 @@ cd GCP-CVS-CapacityManager
 # Make sure to setup Cloud Monitoring alert policy. Send incidents to a PubSub notification channel.
 # Make sure Cloud Monitoring service account is allowed to send messages to PubSub
 # See https://cloud.google.com/monitoring/support/notification-options#pubsub
+# it is recommended to use the supplied Terrafrom template
+# to setup Cloud MOnitoring Alert, PubSub Topic, permissions and Notification Channel
+cd Alerting
+terraform init
+terraform apply
+cd ..
 
-topic=CVSCapacityManager
-
-# Verify topic exists
-gcloud pubsub topics describe $topic
+topic=CVSCapacityManagerEvents
 
 # Set serviceAccount to name of service account with cloudvolumes.admin permissions (see https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US). This can later be used for service account impersonation, but is currently defunct.
 # Provide JSON key to this service account in a file named key.json
-# serviceAccount=$(cat key.json | jq '.client_email')
-serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
+serviceAccount=$(cat key.json | jq -r '.client_email')
+# or set manually: serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
 
 # Deploy Cloud Function
 # add "CVS_DRY_MODE: x" to enable dry mode, omit CVS_DRY_MODE to active volume resizing
-cat <<EOF > .temp.yaml
+cat <<EOF > .temp-event.yaml
 CVS_CAPACITY_MARGIN: "20"
 SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
-CVS_DRY_MODE: x
 EOF
-gcloud functions deploy CVSCapacityManager --entry-point CVSCapacityManager_alert_event --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp.yaml
-rm .temp.yaml
+gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp.yaml
+rm .temp-event.yaml
 ```
 
 ## Notes

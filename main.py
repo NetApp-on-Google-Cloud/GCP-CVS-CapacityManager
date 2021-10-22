@@ -201,6 +201,7 @@ class GCPCVS():
 #  New proposed size in B, rounded up to align to full GiB
 def calculateNewCapacity(size: int, serviceLevel: str, duration: int, margin: int) -> int:
     logging.info(f"calculateNewCapacity {size}, {serviceLevel}, {duration}, {margin}")
+
     qos = { 'basic' : 16,
             'standard': 64,
             'extreme': 128,
@@ -210,9 +211,11 @@ def calculateNewCapacity(size: int, serviceLevel: str, duration: int, margin: in
     if serviceLevel in qos:
         speed = qos[serviceLevel]
     else:
-        logging.warning(f'calculateNewCapacity: Unknown serviceType: {serviceLevel}. Using "high"')
-        speed = qos['high']
-        
+        logging.warning(f'calculateNewCapacity: Unknown serviceType: {serviceLevel}. Using "extreme"')
+        speed = qos['extreme']
+    
+    speed = int(speed) # Linter of Cloud Function is on drugs
+
     # Calculate the new volume size
     # Formula takes into consideration that bigger volume = more speed = quicker fill rate
     newSize = int( -size / ( duration * 60 * speed / 1024**2 * (1 + margin / 100) - 1) )
@@ -234,9 +237,9 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
 
     for volume in allvolumes:
         name = volume["name"]
-        quota = volume["quotaInBytes"]
-        used = volume["usedBytes"]
-        snapReserve = volume["snapReserve"]
+        quota = int(volume["quotaInBytes"])
+        used = int(volume["usedBytes"])
+        snapReserve = int(volume["snapReserve"])
 
         # skip volumes which are not available
         if volume['lifeCycleState'] != 'available':
@@ -415,8 +418,8 @@ def CVSCapacityManager_pubsub(event, context):
         
         try:
             project_id = parameters['projectid']
-            duration = parameters['duration']
-            margin = parameters['margin']
+            duration = int(parameters['duration'])
+            margin = int(parameters['margin'])
             service_account = parameters['service_account']
             if 'dry_mode' in parameters:
                 dry_mode = True
@@ -455,9 +458,9 @@ def CVSCapacityManager_cli():
         sys.exit(2)
 
     # Amount of spare capacity in % (e.g. 10 = 10%) to add on top of calculated target capacity
-    margin = getenv('CVS_CAPACITY_MARGIN', 20)
+    margin = int(getenv('CVS_CAPACITY_MARGIN', 20))
     # Tell script how often it is ran. Duration in minutes
-    duration = getenv('CVS_CAPACITY_INTERVAL', 60)
+    duration = int(getenv('CVS_CAPACITY_INTERVAL', 60))
     # Dry mode. Report everything, but don't change volume sizes
     if 'CVS_DRY_MODE' in environ:
         dry_mode = True

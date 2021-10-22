@@ -19,9 +19,33 @@ provider "google" {
     project = var.gcp_project
 }
 
-data "google_monitoring_notification_channel" "cvs-volume-usage" {
-  # TODO: Specify your notification channel
-  display_name = "OK-CVS-VolumeFull"
+# Fetch project number
+data "google_project" "project" {
+}
+
+# Create topic
+# Used for Incidents sent from Cloud Monitorint alert policy
+# to resize script running as Cloud Function
+resource "google_pubsub_topic" "CVSCapacityManagerEvents" {
+  name = "CVSCapacityManagerEvents"
+}
+
+# Grant "Monitoring Notification Service Agent" permissions to publish to PubSub topic
+# see https://cloud.google.com/monitoring/support/notification-options#pubsub
+resource "google_pubsub_topic_iam_binding" "MNSA_binding" {
+  project = google_pubsub_topic.CVSCapacityManagerEvents.project
+  topic = google_pubsub_topic.CVSCapacityManagerEvents.name
+  role = "roles/pubsub.publisher"
+  members = ["serviceAccount:service-${data.google_project.project.number}@gcp-sa-monitoring-notification.iam.gserviceaccount.com"]
+}
+
+# Create Cloud Monitoring notification channel
+resource "google_monitoring_notification_channel" "cvs-channel" {
+  display_name = "CVS SpaceRunningLow Alerts"
+  type         = "pubsub"
+  labels = {
+    topic = google_pubsub_topic.CVSCapacityManagerEvents.id
+  }
 }
 
 # Create CVS Alert policy
@@ -53,7 +77,7 @@ EOF
     # Whom to notify
     # See https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/monitoring_notification_channel
     # and https://registry.terraform.io/providers/hashicorp/google/latest/docs/data-sources/monitoring_notification_channel
-    notification_channels = [data.google_monitoring_notification_channel.cvs-volume-usage.name]
+    notification_channels = [google_monitoring_notification_channel.cvs-channel.name]
 
     documentation {
         content = "Usage of CVS volume exceeded threshold. Increase volume allocation to avoid out-of-space conditions."
