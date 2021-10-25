@@ -18,4 +18,5 @@ LICENSE
 README.md
 images/
 .temp.yaml
+.temp-event.yaml
 #!include:.gitignore

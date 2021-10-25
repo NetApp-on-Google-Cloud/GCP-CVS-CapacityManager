@@ -19,7 +19,7 @@ import json
 import locale
 from os import getenv, environ
 import base64
-from typing import NewType
+from typing import Optional
 import requests
 import re
 from googleapiclient import discovery, errors
@@ -30,7 +30,7 @@ from google.oauth2 import service_account
 
 # Lookup Project Number for given ProjectID
 # requires resourcemanager.projects.get permissions
-def getGoogleProjectNumber(project_id: str) -> str:
+def getGoogleProjectNumber(project_id: str) -> Optional[str]:
    credentials, _ = default()
 
    service = discovery.build('cloudresourcemanager', 'v1', credentials=credentials)
@@ -41,21 +41,22 @@ def getGoogleProjectNumber(project_id: str) -> str:
       return response["projectNumber"]
    except errors.HttpError as e:
       # Unable to resolve project. No permission or project doesn't exist
+      logging.error(f"Cannot resolve projectId {project_id} to project number. Missing 'resourcemanager.projects.get' permissions? ")
       return None
 
 # Check if string is base64 encoded
 def isBase64(sb):
-        try:
-                if isinstance(sb, str):
-                        # If there's any unicode here, an exception will be thrown and the function will return false
-                        sb_bytes = bytes(sb, 'ascii')
-                elif isinstance(sb, bytes):
-                        sb_bytes = sb
-                else:
-                        raise ValueError("Argument must be string or bytes")
-                return base64.b64encode(base64.b64decode(sb_bytes)) == sb_bytes
-        except Exception:
-                return False
+    try:
+        if isinstance(sb, str):
+            # If there's any unicode here, an exception will be thrown and the function will return false
+            sb_bytes = bytes(sb, 'ascii')
+        elif isinstance(sb, bytes):
+            sb_bytes = sb
+        else:
+            raise ValueError("Argument must be string or bytes")
+        return base64.b64encode(base64.b64decode(sb_bytes)) == sb_bytes
+    except Exception:
+        return False
 
 class BearerAuth(requests.auth.AuthBase):
     credentials = None
@@ -126,7 +127,7 @@ class GCPCVS():
         return r.json()
 
     # returns volumes with volumeID in specified region
-    def getVolumesByVolumeID(self, region: str, volumeID: str) -> dict:
+    def getVolumesByVolumeID(self, region: str, volumeID: str) -> Optional[dict]:
         logging.info(f"getVolumesByVolumeID {region}, {volumeID}")
         r = requests.get(f"{self.baseurl}/locations/{region}/Volumes", headers=self.headers, auth=self.token)
         r.raise_for_status()
@@ -161,7 +162,7 @@ class GCPCVS():
     # yes, the name "standard" has two different meaning *sic*
     # CVS-SO uses serviceLevel = basic, storageClass = software and regional_ha=(true|false) and
     # for simplicity reasons we translate it to serviceLevel = standard-sw
-    def translateServiceLevelAPI2UI(self, serviceLevel: str) -> str:
+    def translateServiceLevelAPI2UI(self, serviceLevel: str) -> Optional[str]:
         serviceLevelsAPI = {
             "basic": "standard",
             "standard": "premium",
@@ -174,7 +175,7 @@ class GCPCVS():
             logging.warning(f"translateServiceLevelAPI2UI: Unknown serviceLevel {serviceLevel}")
             return None
 
-    def translateServiceLevelUI2API(self, serviceLevel: str) -> str:
+    def translateServiceLevelUI2API(self, serviceLevel: str) -> Optional[str]:
         serviceLevelsUI = {
             "standard": "basic",
             "premium": "standard",
@@ -361,7 +362,7 @@ def CVSCapacityManager_alert_event(event, context):
                 if volume['isDataProtection'] == True and volume['inReplication'] == True:
                     print(json.dumps({'severity': "INFO", 'volume': volumeName, 'message': "Secondary volume in active replication. Skipping ..."}))
                 else:
-                    oldSize = volume["quotaInBytes"]
+                    oldSize = int(volume["quotaInBytes"])
                     newSize = int(oldSize * 100 / (100 - margin))
                     # Round up to full GiB
                     newSize = int(newSize / 1024**3 + 1) * 1024**3

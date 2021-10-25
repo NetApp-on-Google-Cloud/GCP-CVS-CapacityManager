@@ -133,20 +133,18 @@ terraform init
 terraform apply
 cd ..
 
-topic=CVSCapacityManagerEvents
-
 # Set serviceAccount to name of service account with cloudvolumes.admin permissions (see https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US). This can later be used for service account impersonation, but is currently defunct.
 # Provide JSON key to this service account in a file named key.json
 serviceAccount=$(cat key.json | jq -r '.client_email')
 # or set manually: serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
 
 # Deploy Cloud Function
-# add "CVS_DRY_MODE: x" to enable dry mode, omit CVS_DRY_MODE to active volume resizing
+# add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to active volume resizing
 cat <<EOF > .temp-event.yaml
 CVS_CAPACITY_MARGIN: "20"
 SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
 EOF
-gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp-event.yaml
+gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic CVSCapacityManagerEvents --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp-event.yaml
 rm .temp-event.yaml
 ```
 
