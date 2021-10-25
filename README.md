@@ -31,7 +31,7 @@ Running in this special mode, only the volume sent by PubSub event will be resiz
 
 ![](images/serverless.png)
 
-[cvs-Alerting.tf](Alerting/cvs-Alerting.tf) contains a Terraform example for an alert policy.
+[cvs-Alerting-PubSub.tf](Alerting/cvs-Alerting-PubSub.tf) contains a Terraform example for an alert policy.
 
 ## Usage
 
@@ -89,7 +89,6 @@ DEVSHELL_PROJECT_ID: $(gcloud config get-value project)
 CVS_CAPACITY_MARGIN: "20"
 CVS_CAPACITY_INTERVAL: "60"
 SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
-CVS_DRY_MODE: x
 EOF
 gcloud functions deploy CVSCapacityManager --entry-point CVSCapacityManager_pubsub --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp.yaml
 rm .temp.yaml
