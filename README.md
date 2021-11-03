@@ -83,13 +83,15 @@ serviceAccount=$(cat key.json | jq -r '.client_email')
 # serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
 
 # Deploy Cloud Function
-# add "CVS_DRY_MODE: x" to enable dry mode, omit CVS_DRY_MODE to active volume resizing
+# add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to activate volume resizing
 cat <<EOF > .temp.yaml
 DEVSHELL_PROJECT_ID: $(gcloud config get-value project)
 CVS_CAPACITY_MARGIN: "20"
 CVS_CAPACITY_INTERVAL: "60"
 SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
 EOF
+# Note: Cloud Functions are only available in specific regions. Choose one you like from
+# https://cloud.google.com/functions/docs/locations
 gcloud functions deploy CVSCapacityManager --entry-point CVSCapacityManager_pubsub --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp.yaml
 rm .temp.yaml
 
@@ -139,11 +141,13 @@ serviceAccount=$(cat key.json | jq -r '.client_email')
 # or set manually: serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
 
 # Deploy Cloud Function
-# add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to active volume resizing
+# add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to activate volume resizing
 cat <<EOF > .temp-event.yaml
 CVS_CAPACITY_MARGIN: "20"
 SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
 EOF
+# Note: Cloud Functions are only available in specific regions. Choose one you like from
+# https://cloud.google.com/functions/docs/locations
 gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic CVSCapacityManagerEvents --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp-event.yaml
 rm .temp-event.yaml
 ```
