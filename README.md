@@ -88,7 +88,7 @@ cat <<EOF > .temp.yaml
 DEVSHELL_PROJECT_ID: $(gcloud config get-value project)
 CVS_CAPACITY_MARGIN: "20"
 CVS_CAPACITY_INTERVAL: "60"
-SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
+SERVICE_ACCOUNT_CREDENTIAL: "$(cat key.json | base64)"
 EOF
 # Note: Cloud Functions are only available in specific regions. Choose one you like from
 # https://cloud.google.com/functions/docs/locations
@@ -144,7 +144,7 @@ serviceAccount=$(cat key.json | jq -r '.client_email')
 # add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to activate volume resizing
 cat <<EOF > .temp-event.yaml
 CVS_CAPACITY_MARGIN: "20"
-SERVICE_ACCOUNT_CREDENTIAL: $(cat key.json | base64)
+SERVICE_ACCOUNT_CREDENTIAL: "$(cat key.json | base64)"
 EOF
 # Note: Cloud Functions are only available in specific regions. Choose one you like from
 # https://cloud.google.com/functions/docs/locations
