@@ -49,7 +49,7 @@ For Cloud Monitoring alert event based invocation, projectid will be provided by
 The script takes the 5 arguments via environment variables. Example:
 
 ```bash
-# Make sure python3.6 or later environment exists on your machine
+# Make sure python3.9 or later environment exists on your machine
 git clone https://github.com/NetApp-on-Google-Cloud/GCP-CVS-CapacityManager.git
 cd GCP-CVS-CapacityManager
 pip3 install -r requirements.txt
