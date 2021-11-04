@@ -94,7 +94,8 @@ class GCPCVS():
     token: BearerAuth = None
     baseurl: str = None
     headers: dict = {
-                "Content-Type": "application/json"
+                "Content-Type": "application/json",
+                "User-Agent": "CVSCapacityManager"
             }
 
     # Initializes the object
