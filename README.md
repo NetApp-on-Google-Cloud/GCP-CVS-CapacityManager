@@ -109,7 +109,7 @@ Parameters are passed via environment variables to the Cloud Function.
 The intended way to run it is use a alert as described in [Monitoring cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US). Configure PubSub as notification channel and attach this script running as [Google Cloud Function](https://cloud.google.com/functions) to the PubSub topic.
 
 Warning:
-* The Cloud Function is only triggered once, if threshold is breached. Make sure your margin adds enough space to get the volume under the threshold (e.g. 20% margin for a 80% threshold), otherwise volume stays above threshold and resizing will not be triggered again. Sizind advice: margin >= 100-threshold. e.g for a threshold at 80%, margin should be set >= 20%
+* The Cloud Function is only triggered once, if threshold is breached. Make sure your margin adds enough space to get the volume under the threshold (e.g. 25% margin for a 80% threshold), otherwise volume stays above threshold and resizing will not be triggered again. Sizind advice: margin >= 100-threshold+5. e.g for a threshold at 80%, margin should be set >= 25%. Note that alerts only trigger once every 10 minutes. If you resize and pass the threshold within 10 minutes again, no new alert is triggered.
 * Events created before the Cloud Function did subscribe to the PubSub topic are lost. You need to resize the volumes in advance, e.g. by using the CLI way
 
 Example screenshot of event-based invocation in action:
@@ -143,7 +143,7 @@ serviceAccount=$(cat key.json | jq -r '.client_email')
 # Deploy Cloud Function
 # add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to activate volume resizing
 cat <<EOF > .temp-event.yaml
-CVS_CAPACITY_MARGIN: "20"
+CVS_CAPACITY_MARGIN: "25"
 SERVICE_ACCOUNT_CREDENTIAL: "$(cat key.json | base64)"
 EOF
 # Note: Cloud Functions are only available in specific regions. Choose one you like from
