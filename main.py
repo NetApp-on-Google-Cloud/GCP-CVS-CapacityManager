@@ -121,7 +121,7 @@ class GCPCVS():
         return f"CVS: Project: {self.project}\nService Account: {self.service_account}\n"
 
     # returns list with dicts of all volumes in specified region ("-" for all regions)
-    def getVolumesByRegion(self, region: str) -> list[dict]:
+    def getVolumesByRegion(self, region: str) -> list:
         logging.info(f"getVolumesByRegion {region}")
         r = requests.get(f"{self.baseurl}/locations/{region}/Volumes", headers=self.headers, auth=self.token)
         r.raise_for_status()
