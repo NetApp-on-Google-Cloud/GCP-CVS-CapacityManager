@@ -18,6 +18,7 @@ import sys
 import json
 import locale
 from os import getenv, environ
+from pathlib import Path
 import base64
 from typing import Optional
 import requests
@@ -70,7 +71,12 @@ class BearerAuth(requests.auth.AuthBase):
             svc_creds = service_account.Credentials.from_service_account_info(json.loads(base64.b64decode(sa_key)))
         else:
             # we got an file path to an JSON key file
-            svc_creds = service_account.Credentials.from_service_account_file(sa_key)
+            file_path = Path(sa_key)
+            if file_path.is_file():
+                svc_creds = service_account.Credentials.from_service_account_file(sa_key)
+            else:
+                logging.error('Passed credentials are not a base64 encoded json key nor a vaild file path to a keyfile. Exiting ...')
+                sys.exit(1)
         jwt_creds = Credentials.from_signing_credentials(svc_creds, audience=audience)
         request = googleRequest()
         jwt_creds.refresh(request)
