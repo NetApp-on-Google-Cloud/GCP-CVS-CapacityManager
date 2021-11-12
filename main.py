@@ -232,9 +232,7 @@ def calculateNewCapacity(size: int, serviceLevel: str, duration: int, margin: in
 
     return newSize
 
-# Query all volumes in the project. For each volume, calculate how big it can grow within <duration>
-# considering the current used size and the max write speed determined by volumes serviceLevel
-# If calculated_size > allocted_size, resize volume to calculated_size
+# Resize all volume of the project
 def resize(project_id: str, service_account_credential: str, duration:int, margin: int, outputJSON: bool, dry_mode: bool):
     cvs = GCPCVS(project_id, service_account_credential)
     
@@ -244,69 +242,89 @@ def resize(project_id: str, service_account_credential: str, duration:int, margi
         print(f'{"Name":30} {"serviceLevel":12} {"used [B]":>22} {"allocated [B]":>22} {"snapReserve":11} {"%used":5} {"new_allocated [B]":>22} {"Resize"}')
 
     for volume in allvolumes:
-        name = volume["name"]
-        quota = int(volume["quotaInBytes"])
-        used = int(volume["usedBytes"])
-        snapReserve = int(volume["snapReserve"])
+        resizeVolume(cvs, volume, duration, margin, outputJSON, dry_mode)
 
-        # skip volumes which are not available
-        if volume['lifeCycleState'] != 'available':
-            if outputJSON == True:
-                print(json.dumps({'severity': "INFO", 'volume': name, 'message': "Volume is not available. Skipping ..."}))
-            else:
-                print(f'{name:30} {"Volume is not available. Skipping ..."}')
-            continue
+# Resizes a volume
+# If duration is 0, newSize = used * 100 / (100 - margin). Basically, leave "margin%" free space after resize
+# If duraction <> 0, use dynamic size calculation, see calculateNewCapacity
+def resizeVolume(cvs, volume: dict, duration:int, margin: int, outputJSON: bool, dry_mode: bool) -> bool:
+    name = volume["name"]
+    quota = int(volume["quotaInBytes"])
+    used = int(volume["usedBytes"])
+    snapReserve = int(volume["snapReserve"])
 
-        # active CRR Secondary volumes are resized by resizing the primary volume. Ignore
-        if volume['isDataProtection'] == True and volume['inReplication'] == True:
-            if outputJSON == True:
-                print(json.dumps({'severity': "INFO", 'volume': name, 'message': "Secondary volume in active replication. Skipping ..."}))
-            else:
-                print(f'{name:30} {"Secondary volume in active replication. Skipping ..."}')
-            continue
-
-        # CVS-standard-sw uses serviceLevel = "basic", which deliver 128 KiB/s/GiB
-        # CVS-performance serviceLevel = "basic" is "Standard", which delivers 16 KiB/s/GiB
-        # to distinguish both kinds of "basic", call the CVS-standard-sw one "standard-sw"
-        if volume["storageClass"] == "hardware":
-            serviceLevel = volume["serviceLevel"]
-        else:
-            serviceLevel = "standard-sw"
-  
-        # Calculate new size
-        newSize = calculateNewCapacity(used, serviceLevel, duration, margin)
-        if newSize > quota:
-            enlarge = True
-            if newSize > 100*1024**4:
-                if outputJSON == True:
-                    print(json.dumps({'severity': "WARNING", 'volume': name, 'message': "Resizing capped to 100 TiB"}))
-                else:
-                    print("Resizing capped to 100 TiB")
-                newSize = 100*1024**4
-        else:
-            newSize = quota
-            enlarge = False
-
-        # Print volume list with relevant data
+    # skip volumes which are not available
+    if volume['lifeCycleState'] != 'available':
         if outputJSON == True:
-            # Structured logging
-            entry = dict(
-                severity = "INFO",
-                volume = name,
-                serviceLevel = cvs.translateServiceLevelAPI2UI(serviceLevel),
-                used = used,
-                quota = quota,
-                enlarge = enlarge,
-                newSize = newSize,
-                snapReserve = snapReserve
-            )
-            print(json.dumps(entry))
+            print(json.dumps({'severity': "INFO", 'volume': name, 'message': "Volume is not available. Skipping ..."}))
         else:
-            print(f'{name:30} {cvs.translateServiceLevelAPI2UI(serviceLevel):12} {used:22n} {quota:22n} {snapReserve:11n} {round(used / quota * 100, 1):5n} {newSize:22n} {"Yes" if enlarge else ""}')
+            print(f'{name:30} {"Volume is not available. Skipping ..."}')
+        return False
 
-        if enlarge == True and dry_mode == False:
-            # Volume needs resizing. Call API
-            cvs.resizeVolumeByVolumeID(volume["region"], volume["volumeId"], newSize)
+    # active CRR Secondary volumes are resized by resizing the primary volume. Ignore
+    if volume['isDataProtection'] == True and volume['inReplication'] == True:
+        if outputJSON == True:
+            print(json.dumps({'severity': "INFO", 'volume': name, 'message': "Secondary volume in active replication. Skipping ..."}))
+        else:
+            print(f'{name:30} {"Secondary volume in active replication. Skipping ..."}')
+        return False
+
+    # CVS-standard-sw uses serviceLevel = "basic", which deliver 128 KiB/s/GiB
+    # CVS-performance serviceLevel = "basic" is "Standard", which delivers 16 KiB/s/GiB
+    # to distinguish both kinds of "basic", call the CVS-standard-sw one "standard-sw"
+    if volume["storageClass"] == "hardware":
+        serviceLevel = volume["serviceLevel"]
+    else:
+        serviceLevel = "standard-sw"
+
+    # Calculate new size
+    if duration == 0:
+        # Using static margin
+        newSize = int(used * 100 / (100 - margin))
+        # Round up to full GiB
+        newSize = int(newSize / 1024**3 + 1) * 1024**3
+    else:
+        # Using dynamic size, dependent on volume size, servicelevel etc
+        newSize = calculateNewCapacity(used, serviceLevel, duration, margin)
+
+    # Do we need to resize the volume?
+    if newSize > quota:
+        enlarge = True
+        # max volume size is 100TiB. cap at 100TiB
+        if newSize > 100*1024**4:
+            if outputJSON == True:
+                print(json.dumps({'severity': "WARNING", 'volume': name, 'message': "Resizing capped to 100 TiB"}))
+            else:
+                print("Resizing capped to 100 TiB")
+            newSize = 100*1024**4
+    else:
+        newSize = quota
+        enlarge = False
+
+    # Print volume list with relevant data
+    if outputJSON == True:
+        # Structured logging
+        entry = dict(
+            severity = "INFO",
+            volume = name,
+            region = volume["region"],
+            UUID = volume["volumeId"],
+            serviceLevel = cvs.translateServiceLevelAPI2UI(serviceLevel),
+            oldSize = used,
+            quota = quota,
+            enlarge = enlarge,
+            newSize = newSize,
+            snapReserve = snapReserve
+        )
+        print(json.dumps(entry))
+    else:
+        print(f'{name:30} {cvs.translateServiceLevelAPI2UI(serviceLevel):12} {used:22n} {quota:22n} {snapReserve:11n} {round(used / quota * 100, 1):5n} {newSize:22n} {"Yes" if enlarge else ""}')
+
+    if enlarge == True and dry_mode == False:
+        # Volume needs resizing. Call API
+        cvs.resizeVolumeByVolumeID(volume["region"], volume["volumeId"], newSize)
+        return True
+    return False
 
 def CVSCapacityManager_alert_event(event, context):
     """ Receives PubSub messages from Cloud alerts and resizes volume
@@ -359,28 +377,19 @@ def CVSCapacityManager_alert_event(event, context):
             print(json.dumps({'parameter_source': 'pubsub', 'project_id': project_id, 'project_number': project_number, 'region': region, 'name': volumeName, 'UUID': volume_id}))
 
             # resize the volume
-            if dry_mode == False:
-                # Volume needs resizing. Call API
-                cvs = GCPCVS(project_id, service_account)
-                volume = cvs.getVolumesByVolumeID(region, volume_id)
-                if volume == None:
-                    print(json.dumps({'severity': "ERROR", 'message': f"Cannot find volume {volume_id} in region {region}"}))
-                    return f"Cannot find volume {volume_id} in region {region}", 400
-                if volume['isDataProtection'] == True and volume['inReplication'] == True:
-                    print(json.dumps({'severity': "INFO", 'volume': volumeName, 'message': "Secondary volume in active replication. Skipping ..."}))
-                else:
-                    oldSize = int(volume["quotaInBytes"])
-                    newSize = int(oldSize * 100 / (100 - margin))
-                    # Round up to full GiB
-                    newSize = int(newSize / 1024**3 + 1) * 1024**3
-                    # max volume size is 100TiB. cap at 100TiB
-                    if newSize > 100*1024**4:
-                        print(json.dumps({'severity': "WARNING", 'volume': volumeName, 'message': "Resizing capped to 100 TiB"}))
-                        newSize = 100*1024**4
-                    cvs.resizeVolumeByVolumeID(region, volume_id, newSize)
-                    print(json.dumps({'newSize': newSize, 'oldSize': oldSize, 'margin': margin, 'project_id': project_id, 'project_number': project_number, 'region': region, 'name': volumeName, 'UUID': volume_id}))
+            # Volume needs resizing. Call API
+            cvs = GCPCVS(project_id, service_account)
+            volume = cvs.getVolumesByVolumeID(region, volume_id)
+            if volume == None:
+                print(json.dumps({'severity': "ERROR", 'message': f"Cannot find volume {volume_id} in region {region}"}))
+                return f"Cannot find volume {volume_id} in region {region}", 400
+            resizeVolume(cvs, volume, 0, margin, True, dry_mode)
         else:
-            print(json.dumps({'severity': "ERROR", 'message': "No PubSub event data received."}))
+            print(json.dumps({'severity': "ERROR", 'message': "No Alert received. Assuming Cloud Function Test ..."}))
+            # Like to use the Cloud Function test to test credentials and do dry run.
+            # Issue: Cloud Functions don't pass projectID anymore.
+            # Potential fixes: 1) Pass it via environment or 2) pass it in test parameter
+            #  resize(getenv(GCP_PROJECT, '')), service_account, 0, margin, True, True)
         return
         
     print(json.dumps({'severity': "ERROR", 'message': "Missing environment parameters - no action"}))
@@ -478,16 +487,6 @@ def CVSCapacityManager_cli():
     print(f"Parameters: CVS_CAPACITY_INTERVAL: {duration} minutes, CVS_CAPACITY_MARGIN: {margin}%, CVS_DRY_MODE: {dry_mode}")
 
     resize(project_id, service_account_credential, duration, margin, False, dry_mode)
-
-    # Testcode for running the pub_sub function manually
-    # payload = json.dumps({ 'projectid': project_id,
-    #             'duration': duration,
-    #             'margin': margin,
-    #             'service_account': service_account_credential,
-    #             'dry_mode': "yes"
-    #             })
-    # event = { 'data': base64.b64encode(payload.encode('utf-8'))}
-    # CVSCapacityManager_pubsub(event, None)
 
 if __name__ == "__main__":
     CVSCapacityManager_cli()

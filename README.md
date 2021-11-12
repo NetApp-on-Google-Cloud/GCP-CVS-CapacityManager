@@ -9,15 +9,11 @@ There are three ways to run the script:
 
 ### CLI or schedules via Cloud Scheduler
 
-Whenever the script runs, it enumerates all volumes in the specified project. For each volume, it determines the used size (numbers of bytes consumed by data) and the quota (size of the volume as set by user).
+Whenever the script in invoked, it calculates a target size for every volume and resizes volumes if allocation is smaller than new size calculated.
 
-The user  needs to specify the *interval* the script is invoked and an optional security *margin*.
+The user can choose between two different resizing strategies.
 
-Since the service level and the size of a volume determine maximum write speed, the script can calculate the maximum amount of new data which can be written to the volume within the interval (e.g every 60 minutes). This results in a new potential size. A security margin (in %) can be added (e.g. 10 for 10%) on top. If the new potential size is bigger than the current quota, the volume quota will be grown to the calculated size.
-
-If the script is executed at the same scheduling interval specified in *duration*, the volume will always be big enough to avoid out-of-space conditions.
-
-It can be run in a traditional way, scheduled via cronjob on a VM, or in a complete serverless way.
+It can be run as script from an VM, scheduled via cronjob on a VM, or in a complete serverless way.
 
 On GCP, the recommended approach is to use Google Cloud Scheduler to trigger Pub/Sub messages, which are received by the script running as Cloud Function.
 
@@ -27,19 +23,40 @@ On GCP, the recommended approach is to use Google Cloud Scheduler to trigger Pub
 
 CVS documentation recommends to implement [Monitoring of cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US). Users can setup an alert policy to monitor volume free space. If usage ratio goes over a threshold, Cloud Monitoring will trigger an incident. Incidents can be sent to multiple notification channels. Using PubSub as notification channel, incidents (events) can be sent to this script running as Cloud Function.
 
-Running in this special mode, only the volume sent by PubSub event will be resized. New size will newSize = current_allocated_size * 100 / (100 - margin).
+The PubSub event will specify which volume needs resizing and only this volume will be resized. All other volumes will not be touched.
+
+Only the static resizing strategy is available in this mode.
 
 ![](images/serverless.png)
 
 [cvs-Alerting-PubSub.tf](Alerting/cvs-Alerting-PubSub.tf) contains a Terraform example for an alert policy.
+
+## Resizing strategies
+The script supports two different resizing strategies.
+
+The environment variable CVS_CAPACITY_INTERVAL can be used to choose the strategy. If set to 0, the static strategy is used. For interval > 0  or if omitted, dynamic strategy is used.
+
+Cloud Monitoring alert triggered resizing will always use the static strategy.
+
+### Dynamic
+
+Since the service level and the size of a volume determine maximum write speed, the script will calculate the maximum amount of new data which can be written to the volume within a specified interval (e.g every 60 minutes). This results in a new potential size. A security margin (in %) can be added (e.g. 10 for 10%) on top.
+
+If the script is executed at the same scheduling interval specified in *interval*, the volume will always be big enough to avoid out-of-space conditions.
+
+### Static
+
+Static is a simple, straight forward strategy. It will resize the volume to have *margin* percent free space.
+
+New size will newSize = current_allocated_size * 100 / (100 - margin).
 
 ## Usage
 
 The script can be invoked via CLI or via a PubSub message. Independent of invocation type, 4 arguments are needed as input:
 
 * **projectid**: GCP project ID (e.g my-project) or GCP project number (e.g. 1234567890). If project ID is specified, the script needs *resourcemanager.projects.get* permissions. Otherwise use project number
-* **duration**: Time interval in minutes the script will be called (e.g. 60 for every 60 minutes)
-* **margin**: In triggered mode, it specifies additional security margin in % which will be added on top of the calculated size. For event based invocation, newSize = current_allocated_size * 100 / (100 - margin)
+* **interval**: Time interval in minutes the script will be called (e.g. 60 for every 60 minutes). If set to 0, static resize strategy is used
+* **margin**: Amount of free space to keep in the volume. See resize strategies
 * **service_account**: A base64 encoded JSON key for an [IAM service account](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US) which has *roles/netappcloudvolumes.admin*. Use ```cat key.json | base64``` to generate it. Goal is to eventually use service account impersonation, but we need to stick with passing credentials for now
 * **dry_mode**: If present, script will only report intended actions, but will not change volume sizes
 
@@ -54,7 +71,7 @@ git clone https://github.com/NetApp-on-Google-Cloud/GCP-CVS-CapacityManager.git
 cd GCP-CVS-CapacityManager
 pip3 install -r requirements.txt
 export DEVSHELL_PROJECT_ID=$(gcloud config get-value project)
-export CVS_CAPACITY_INTERVAL=60 # default is 60 minutes
+export CVS_CAPACITY_INTERVAL=60 # default is 60 minutes. Use 0 for static resizing
 export CVS_CAPACITY_MARGIN=20 # default is 20% on top
 export SERVICE_ACCOUNT_CREDENTIAL=$(cat key.json | base64)
 export CVS_DRY_MODE="whatever" # To allow changes "unset CVS_DRY_MODE"
@@ -109,7 +126,8 @@ Parameters are passed via environment variables to the Cloud Function.
 The intended way to run it is use a alert as described in [Monitoring cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US). Configure PubSub as notification channel and attach this script running as [Google Cloud Function](https://cloud.google.com/functions) to the PubSub topic.
 
 Warning:
-* The Cloud Function is only triggered once, if threshold is breached. Make sure your margin adds enough space to get the volume under the threshold (e.g. 25% margin for a 80% threshold), otherwise volume stays above threshold and resizing will not be triggered again. Sizind advice: margin >= 100-threshold+5. e.g for a threshold at 80%, margin should be set >= 25%. Note that alerts only trigger once every 10 minutes. If you resize and pass the threshold within 10 minutes again, no new alert is triggered.
+* The Cloud Function is only triggered once, if threshold is breached. Make sure your margin adds enough space to get the volume under the threshold (e.g. 25% margin for a 80% threshold), otherwise volume stays above threshold and resizing will not be triggered again. Sizind advice: margin >= 100-threshold+5. e.g for a threshold at 80%, margin should be set >= 25%.
+* Note that alerts only trigger once every 10 minutes. If you resize and pass the threshold within 10 minutes again, no new alert is triggered.
 * Events created before the Cloud Function did subscribe to the PubSub topic are lost. You need to resize the volumes in advance, e.g. by using the CLI way
 
 Example screenshot of event-based invocation in action:
@@ -117,11 +135,13 @@ Example screenshot of event-based invocation in action:
 ![](images/event-example.png)
 
 Please note:
-Cloud Monitoring metrics are pushed every 300 seconds. It can take up to 5 minutes for an incident to be triggered. After incident was triggered and reszingin of volume happened, it takes another 5 minutes for these changes to be reflected in Cloud Monitoring.
+Cloud Monitoring metrics are pushed every 300 seconds. It can take up to 5 minutes for an incident to be triggered. After incident was triggered and resizing of volume happened, it takes another 5 minutes for these changes to be reflected in Cloud Monitoring.
 
 
 Set-up Example:
 ```bash
+# Enable Cloud Monitoring, Cloud Functions, PubSub and Cloud Build before running below commands
+
 git clone https://github.com/NetApp-on-Google-Cloud/GCP-CVS-CapacityManager.git
 cd GCP-CVS-CapacityManager
 
