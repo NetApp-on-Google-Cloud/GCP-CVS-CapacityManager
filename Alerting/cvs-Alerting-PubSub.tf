@@ -30,6 +30,14 @@ resource "google_pubsub_topic" "CVSCapacityManagerEvents" {
   name = "CVSCapacityManagerEvents"
 }
 
+# Monitoring Service Account is created after first Alerting Policy is created
+# Creation is eventually consistent, so we wait some time for Google to creat it
+resource "time_sleep" "wait_30_seconds" {
+  depends_on = [google_monitoring_alert_policy.alert_policy]
+
+  create_duration = "30s"
+}
+
 # Grant "Monitoring Notification Service Agent" permissions to publish to PubSub topic
 # see https://cloud.google.com/monitoring/support/notification-options#pubsub
 resource "google_pubsub_topic_iam_binding" "MNSA_binding" {
@@ -37,6 +45,8 @@ resource "google_pubsub_topic_iam_binding" "MNSA_binding" {
   topic = google_pubsub_topic.CVSCapacityManagerEvents.name
   role = "roles/pubsub.publisher"
   members = ["serviceAccount:service-${data.google_project.project.number}@gcp-sa-monitoring-notification.iam.gserviceaccount.com"]
+
+  depends_on = [ time_sleep.wait_30_seconds ]
 }
 
 # Create Cloud Monitoring notification channel

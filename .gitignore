@@ -127,3 +127,16 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+TF-Testenvironment/
+test/
+Alerting/
+CloudMonitoringTest.py.inactive
+notes.md
+UsageRatio.mql
+.vscode/settings.json
+.gitignore
+key.json
+.DS_store
+.temp.yaml
+.temp-event.yaml
