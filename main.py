@@ -439,7 +439,7 @@ def CVSCapacityManager_pubsub(event, context):
     logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
 
     # If environment variables are set, we use environment for parameters instead of JSON payload
-    if {'DEVSHELL_PROJECT_ID', 'SERVICE_ACCOUNT_CREDENTIAL'} <= set(environ):
+    if {'SERVICE_ACCOUNT_CREDENTIAL'} <= set(environ):
         project_id = getenv('DEVSHELL_PROJECT_ID', None)
         service_account = getenv('SERVICE_ACCOUNT_CREDENTIAL', None)
         duration = int(getenv('CVS_CAPACITY_INTERVAL', 60))
@@ -486,11 +486,11 @@ def CVSCapacityManager_cli():
     # Set this variables for your environment
     project_id = getenv('DEVSHELL_PROJECT_ID', None)
 
-    if project_id == None:
-        logging.error('ProjectID not set in DEVSHELL_PROJECT_ID. Try "export DEVSHELL_PROJECT_ID=$(gcloud config get-value project)"')
-        sys.exit(1)
-    else:
-        print("Project:", project_id)
+    # if project_id == None:
+    #     logging.error('ProjectID not set in DEVSHELL_PROJECT_ID. Try "export DEVSHELL_PROJECT_ID=$(gcloud config get-value project)"')
+    #     sys.exit(1)
+    # else:
+    #     print("Project:", project_id)
 
     # check if file with service account credentials exists
     service_account_credential = getenv('SERVICE_ACCOUNT_CREDENTIAL', None)
