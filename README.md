@@ -155,22 +155,25 @@ terraform init
 terraform apply
 cd ..
 
-# Set serviceAccount to name of service account with cloudvolumes.admin permissions (see https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US). This can later be used for service account impersonation, but is currently defunct.
-# Provide JSON key to this service account in a file named key.json
-serviceAccount=$(cat key.json | jq -r '.client_email')
-# or set manually: serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
-
 # Deploy Cloud Function
 # add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to activate volume resizing
 cat <<EOF > .temp-event.yaml
 CVS_CAPACITY_MARGIN: "25"
 SERVICE_ACCOUNT_CREDENTIAL: "$(cat key.json | (base64 -w 0 2>/dev/null || base64 -b 0))"
 EOF
+
+# Set serviceAccount to name of service account with cloudvolumes.admin permissions (see https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US). This can later be used for service account impersonation, but is currently defunct.
+# Provide JSON key to this service account in a file named key.json
+serviceAccount=$(cat key.json | jq -r '.client_email')
+# or set manually: serviceAccount="cloudvolumes-admin-sa@my-project.iam.gserviceaccount.com"
+
 # Note: Cloud Functions are only available in specific regions. Choose one you like from
 # https://cloud.google.com/functions/docs/locations
 gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic CVSCapacityManagerEvents --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp-event.yaml
 rm .temp-event.yaml
 ```
+
+After installation, it is recommended to use the Cloud Functions UI to trigger a test run. It will output statistics of all the volumes into the Cloud Function logs. It will not resize volumes. If it works, you know that the credentials provided can be used to sucessfully call CVS API.
 
 ## Notes
 * Setting up Cloud Monitoring for volume space usage is recommended. See [Monitoring cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US)

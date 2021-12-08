@@ -61,36 +61,54 @@ def isBase64(sb):
 
 class BearerAuth(requests.auth.AuthBase):
     credentials = None
+    projectID = None
 
     def __init__(self, sa_key):
+        """ Initialize token
+
+        Args:
+            sa_key (str): service account key with cloudvolumes.* permissions
+                Either specify file path to JSON key file or pass key as base64-encoded string
+
+        It raises a ValueError if key provided isn't a valid JSON key.
+        """
         audience = 'https://cloudvolumesgcp-api.netapp.com'
-        # check if we got a path to a service account JSON key file
-        # or we got the key itself encoded base64
+        # check if we got passed a path to a service account JSON key file
+        # or we got passed the key itself encoded base64
         if isBase64(sa_key):
-            # we got an base64 encoded JSON key
-            svc_creds = service_account.Credentials.from_service_account_info(json.loads(base64.b64decode(sa_key)))
+            # we got passed an base64 encoded JSON key
+            json_key = json.loads(base64.b64decode(sa_key))
         else:
-            # we got an file path to an JSON key file
+            # we got passed an file path to an JSON key file
             file_path = Path(sa_key)
             if file_path.is_file():
-                svc_creds = service_account.Credentials.from_service_account_file(sa_key)
+                with open(file_path, 'r') as file:
+                    json_key = json.loads(file.read())
             else:
-                logging.error('Passed credentials are not a base64 encoded json key nor a vaild file path to a keyfile. Exiting ...')
-                sys.exit(1)
+                logging.error('Passed credentials are not a base64 encoded json key nor a vaild file path to a keyfile.')
+                raise ValueError('Passed credentials are not a base64 encoded json key nor a vaild file path to a keyfile.')
+        svc_creds = service_account.Credentials.from_service_account_info(json_key)
         jwt_creds = Credentials.from_signing_credentials(svc_creds, audience=audience)
-        request = googleRequest()
-        jwt_creds.refresh(request)
+        jwt_creds.refresh(googleRequest())
 
+        # Extract projectID from JSON key and store it for later use
         self.credentials = jwt_creds
-        # self.expires_at = datetime.datetime.now() + datetime.timedelta(0, r.json()['expires_in'])
+        self.projectID = json_key['project_id']
 
     def __call__(self, r):
-        # Add expiration check here
+        if self.credentials.expired:
+            self.credentials.refresh(googleRequest())
         r.headers["authorization"] = "Bearer " + self.credentials.token.decode('utf-8')
         return r
 
     def __str__(self):
-        return self.credentials.token
+        if self.credentials.expired:
+            self.credentials.refresh(googleRequest())
+        return self.credentials.token.decode('utf-8')
+
+    def getProjectID(self):
+        """ Returns projectID fetched from JSON key """
+        return self.projectID
 
 # Class to handle CVS API calls
 class GCPCVS():
@@ -104,12 +122,23 @@ class GCPCVS():
                 "User-Agent": "CVSCapacityManager"
             }
 
-    # Initializes the object
-    # IN:
-    #   project = GCP project (projectNumber or  projectID)
-    #   service_account = either base64 encodes service account key or path to key JSON file
-    #                     service account needs cloudvolumes.admin permissions
     def __init__(self, project: str, service_account: str):
+        """
+        Args:
+            project (str): Google project_number or project_id or None
+                If "None", project_id is fetched from service_account
+                If using project_id, resourcemanager.projects.get permissions are required
+            service_account (str): service account key with cloudvolumes.admin permissions
+                Either specify file path to JSON key file or pass key as base64-encoded string    
+        """
+
+        self.service_account = service_account
+        self.token = BearerAuth(service_account)    # Will raise ValueError is key provided is invalid
+
+        if project == None:
+            # Fetch projectID from JSON key file
+            project = self.token.getProjectID()
+
         # Resolve projectID to projectNumber
         if re.match(r"[a-zA-z][a-zA-Z0-9-]+", project):
             self.projectId = project
@@ -117,10 +146,8 @@ class GCPCVS():
             if project == None:
                 raise ValueError("Cannot resolve projectId to project number. Please specify project number.")                
         self.project = project
-        self.service_account = service_account
 
         self.baseurl = 'https://cloudvolumesgcp-api.netapp.com/v2/projects/' + str(self.project)
-        self.token = BearerAuth(service_account)
 
     # print some infos on the class
     def __str__(self) -> str:
@@ -385,11 +412,8 @@ def CVSCapacityManager_alert_event(event, context):
                 return f"Cannot find volume {volume_id} in region {region}", 400
             resizeVolume(cvs, volume, 0, margin, True, dry_mode)
         else:
-            print(json.dumps({'severity': "ERROR", 'message': "No Alert received. Assuming Cloud Function Test ..."}))
-            # Like to use the Cloud Function test to test credentials and do dry run.
-            # Issue: Cloud Functions don't pass projectID anymore.
-            # Potential fixes: 1) Pass it via environment or 2) pass it in test parameter
-            #  resize(getenv(GCP_PROJECT, '')), service_account, 0, margin, True, True)
+            print(json.dumps({'severity': "WARNING", 'message': "No Alert received. Assuming Cloud Function Test. DRY_MODE enabled."}))
+            resize(None, service_account, 0, margin, True, True)
         return
         
     print(json.dumps({'severity': "ERROR", 'message': "Missing environment parameters - no action"}))
