@@ -13,25 +13,46 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-import sys
-import json
-import locale
+import logging, sys, json, locale, datetime, base64, re
+import requests
 from os import getenv, environ
 from pathlib import Path
-import base64
 from typing import Optional
-import requests
-import re
 from googleapiclient import discovery, errors
 from google.auth import default
 from google.auth.transport.requests import Request as googleRequest
 from google.auth.jwt import Credentials
 from google.oauth2 import service_account
+from google.cloud import iam_credentials_v1
 
 # Lookup Project Number for given ProjectID
 # requires resourcemanager.projects.get permissions
 def getGoogleProjectNumber(project_id: str) -> Optional[str]:
+   """Lookup Project Number for gives ProjectID
+   
+   Args:
+      project_id (str): Google Project ID
+      
+   Returns:
+      str: Google Project Number
+   
+   When running inside a Google VM, App, Function etc, it will use VM Metadata to
+   resolve projectID to projectNumber, else it will use
+   https://cloud.google.com/resource-manager/reference/rest/v1/projects/get,
+   which requires resourcemanager.projects.get permissions.
+   """
+
+   # First try to fetch from Google VM Metadata
+   try:
+      metadata_project_ID = requests.get("http://metadata.google.internal/computeMetadata/v1/project/project-id", headers={'Metadata-Flavor': 'Google'}).text
+      metadata_project_number = requests.get("http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id", headers={'Metadata-Flavor': 'Google'}).text
+
+      if project_id == metadata_project_ID:
+         return metadata_project_number
+   except:
+      pass
+
+   # No metadata available, lets use resource manager
    credentials, _ = default()
 
    service = discovery.build('cloudresourcemanager', 'v1', credentials=credentials)
@@ -42,8 +63,12 @@ def getGoogleProjectNumber(project_id: str) -> Optional[str]:
       return response["projectNumber"]
    except errors.HttpError as e:
       # Unable to resolve project. No permission or project doesn't exist
-      logging.error(f"Cannot resolve projectId {project_id} to project number. Missing 'resourcemanager.projects.get' permissions? ")
-      return None
+      logging.error(f"Cannot use cloudresourcemanager to resolve projectId {project_id} to project number. Missing 'resourcemanager.projects.get' permissions? ")
+      pass
+
+   logging.error(f"Cannot resolve {project_id} to project number")
+   return None
+
 
 # Check if string is base64 encoded
 def isBase64(sb):
@@ -60,55 +85,114 @@ def isBase64(sb):
         return False
 
 class BearerAuth(requests.auth.AuthBase):
+    """ Stores, passes und refreshes JWT tokens for CVS. Use with with requests 'auth' parameter. """
     credentials = None
     projectID = None
 
-    def __init__(self, sa_key):
+    def __init__(self, service_account_identifier):
         """ Initialize token
 
         Args:
-            sa_key (str): service account key with cloudvolumes.* permissions
-                Either specify file path to JSON key file or pass key as base64-encoded string
+            service_account_identifier (str): service account  with cloudvolumes.* permissions
+                    Can be specified in multiple ways:
+                    1. Absolute file path to an JSON key file
+                    2. JSON key as base64-encoded string
+                    3. Service Account principal name when using service account impersonation
 
         It raises a ValueError if key provided isn't a valid JSON key.
         """
         audience = 'https://cloudvolumesgcp-api.netapp.com'
-        # check if we got passed a path to a service account JSON key file
-        # or we got passed the key itself encoded base64
-        if isBase64(sa_key):
-            # we got passed an base64 encoded JSON key
-            json_key = json.loads(base64.b64decode(sa_key))
-        else:
-            # we got passed an file path to an JSON key file
-            file_path = Path(sa_key)
-            if file_path.is_file():
-                with open(file_path, 'r') as file:
-                    json_key = json.loads(file.read())
-            else:
-                logging.error('Passed credentials are not a base64 encoded json key nor a vaild file path to a keyfile.')
-                raise ValueError('Passed credentials are not a base64 encoded json key nor a vaild file path to a keyfile.')
-        svc_creds = service_account.Credentials.from_service_account_info(json_key)
-        jwt_creds = Credentials.from_signing_credentials(svc_creds, audience=audience)
-        jwt_creds.refresh(googleRequest())
 
-        # Extract projectID from JSON key and store it for later use
-        self.credentials = jwt_creds
-        self.projectID = json_key['project_id']
+        # Check if we got a passed a user-managed service account principal
+        # Format: <service_account_name>@<project_id>.iam.gserviceaccount.com
+        user_managed_sa_regex = "^[a-z]([-a-z0-9]*[a-z0-9])@[a-z0-9-]+\.iam\.gserviceaccount\.com$"
+        if re.match(user_managed_sa_regex, service_account_identifier):
+            self.projectID = service_account_identifier.split('@')[1].split('.')[0]
+            self.credentials = self.ImpersonationCreds(service_account_identifier)
+        else:
+            # check if we got passed a path to a service account JSON key file
+            # or we got passed the key itself encoded base64
+            if isBase64(service_account_identifier):
+                # we got passed an base64 encoded JSON key
+                json_key = json.loads(base64.b64decode(service_account_identifier))
+            else:
+                # we got passed an file path to an JSON key file
+                file_path = Path(service_account_identifier)
+                if file_path.is_file():
+                    with open(file_path, 'r') as file:
+                        json_key = json.loads(file.read())
+                else:
+                    logging.error('Passed credentials are not a base64 encoded json key nor a vaild file path to a keyfile.')
+                    raise ValueError('Passed credentials are not a base64 encoded json key nor a vaild file path to a keyfile.')
+
+            self.projectID = json_key['project_id']
+            self.credentials = self.JSONKeyCreds(json_key)
 
     def __call__(self, r):
-        if self.credentials.expired:
-            self.credentials.refresh(googleRequest())
-        r.headers["authorization"] = "Bearer " + self.credentials.token.decode('utf-8')
+        r.headers["authorization"] = "Bearer " + self.credentials.get_token()
         return r
 
     def __str__(self):
-        if self.credentials.expired:
-            self.credentials.refresh(googleRequest())
-        return self.credentials.token.decode('utf-8')
+        return self.credentials.get_token()
 
     def getProjectID(self):
         """ Returns projectID fetched from JSON key """
         return self.projectID
+
+    class ImpersonationCreds:
+        # Internal helper class for Service Account Impersonation auth
+        expiry = datetime.datetime.now()
+        token = None
+        service_account_name = None
+        token_life_time = 15*60  # 15 Minutes
+
+        def __init__(self, service_account_name: str):
+            self.service_account_name = service_account_name
+            self._new_token()
+
+        def get_token(self) -> str:
+            if datetime.datetime.now() + datetime.timedelta(seconds=10) > self.expiry:
+                # Token to expire within 10s. Let's refresh
+                self._new_token()
+            return self.token
+
+        def _new_token(self):
+            audience = 'https://cloudvolumesgcp-api.netapp.com'
+
+            now = datetime.datetime.now()
+            self.expiry = now + datetime.timedelta(seconds = self.token_life_time)
+
+            claims = {
+                "iss": self.service_account_name,
+                "sub": self.service_account_name,
+                "iat": int(now.timestamp()),
+                "exp": int(self.expiry.timestamp()),
+                "aud": audience,
+            }
+
+            client = iam_credentials_v1.IAMCredentialsClient()
+            service_account_path = client.service_account_path('-', self.service_account_name)
+            response = client.sign_jwt(request = { "name": service_account_path, "payload": json.dumps(claims) })
+            self.token = response.signed_jwt
+
+    class JSONKeyCreds:
+        # Internal helper class for JSON key auth
+        credentials = None
+
+        def __init__(self, json_key: str):
+            audience = 'https://cloudvolumesgcp-api.netapp.com'
+
+            svc_creds = service_account.Credentials.from_service_account_info(json_key)
+            jwt_creds = Credentials.from_signing_credentials(svc_creds, audience=audience)
+            jwt_creds.refresh(googleRequest())
+
+            self.credentials = jwt_creds
+
+        def get_token(self) -> str:
+            if self.credentials.expired:
+                self.credentials.refresh(googleRequest())
+            return self.credentials.token.decode('utf-8')
+
 
 # Class to handle CVS API calls
 class GCPCVS():
@@ -122,14 +206,17 @@ class GCPCVS():
                 "User-Agent": "CVSCapacityManager"
             }
 
-    def __init__(self, project: str, service_account: str):
+    def __init__(self, service_account: str, project: str = None):
         """
         Args:
+            service_account (str): service account key with cloudvolumes.admin permissions
+                Can be specified in multiple ways:
+                1. Absolute file path to an JSON key file
+                2. JSON key as base64-encoded string
+                3. Service Account principal name when using service account impersonation
             project (str): Google project_number or project_id or None
                 If "None", project_id is fetched from service_account
                 If using project_id, resourcemanager.projects.get permissions are required
-            service_account (str): service account key with cloudvolumes.admin permissions
-                Either specify file path to JSON key file or pass key as base64-encoded string    
         """
 
         self.service_account = service_account
@@ -139,12 +226,13 @@ class GCPCVS():
             # Fetch projectID from JSON key file
             project = self.token.getProjectID()
 
+        # Initialize projectID. Its is now either a valid projectId, or at least the project number
+        self.projectId = project
         # Resolve projectID to projectNumber
         if re.match(r"[a-zA-z][a-zA-Z0-9-]+", project):
-            self.projectId = project
             project = getGoogleProjectNumber(project)
             if project == None:
-                raise ValueError("Cannot resolve projectId to project number. Please specify project number.")                
+                raise ValueError("Cannot resolve projectId to project number. Please specify project number.")
         self.project = project
 
         self.baseurl = 'https://cloudvolumesgcp-api.netapp.com/v2/projects/' + str(self.project)
@@ -261,7 +349,7 @@ def calculateNewCapacity(size: int, serviceLevel: str, duration: int, margin: in
 
 # Resize all volume of the project
 def resize(project_id: str, service_account_credential: str, duration:int, margin: int, outputJSON: bool, dry_mode: bool):
-    cvs = GCPCVS(project_id, service_account_credential)
+    cvs = GCPCVS(service_account_credential, project_id)
     
     # Query all CVS volumes in project
     allvolumes = cvs.getVolumesByRegion("-")
@@ -405,7 +493,7 @@ def CVSCapacityManager_alert_event(event, context):
 
             # resize the volume
             # Volume needs resizing. Call API
-            cvs = GCPCVS(project_id, service_account)
+            cvs = GCPCVS(service_account, project_id)
             volume = cvs.getVolumesByVolumeID(region, volume_id)
             if volume == None:
                 print(json.dumps({'severity': "ERROR", 'message': f"Cannot find volume {volume_id} in region {region}"}))
