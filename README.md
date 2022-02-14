@@ -57,10 +57,10 @@ The script can be invoked via CLI or via a PubSub message. Independent of invoca
 Required:
 * **interval**: Time interval in minutes the script will be called (e.g. 60 for every 60 minutes). If set to 0, static resize strategy is used
 * **margin**: Amount of free space to keep in the volume. See resize strategies
-* **service_account**: A base64 encoded JSON key for an [IAM service account](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US) which has *roles/netappcloudvolumes.admin*. Use ```cat key.json | base64``` to generate it. Goal is to eventually use service account impersonation, but we need to stick with passing credentials for now
+* **service_account**: principal of service account to impersonate. Needs *roles/netappcloudvolumes.admin* permissions. See https://cloud.google.com/iam/docs/impersonating-service-accounts#impersonate-sa-level. Run CloudFunctions as another service account, which is granted roles/iam.serviceAccountTokenCreator to this one. 
 
 Optional:
-* **projectid**: GCP project ID (e.g my-project) or GCP project number (e.g. 1234567890). if omited, project ID use read from service_account. If project ID is specified, the script needs *resourcemanager.projects.get* permissions. Use project number if that permissions are not granted. Use environment variable DEVSHELL_PROJECT_ID
+* **projectid**: GCP project ID (e.g my-project) or GCP project number (e.g. 1234567890). if omited, project ID is derived from service_account. If project ID is specified, the script needs *resourcemanager.projects.get* permissions. Use project number if that permissions are not granted. Use environment variable DEVSHELL_PROJECT_ID
 * **dry_mode**: If present, script will only report intended actions, but will not change volume sizes
 
 For Cloud Monitoring alert event based invocation, projectid will be provided by the PubSub event and doesn't need to be specified.
@@ -73,16 +73,23 @@ The script takes the 5 arguments via environment variables. Example:
 git clone https://github.com/NetApp-on-Google-Cloud/GCP-CVS-CapacityManager.git
 cd GCP-CVS-CapacityManager
 pip3 install -r requirements.txt
+cvs_serviceAccount="<serviceaccount>@<project_ID>.iam.gserviceaccount.com" # service account to impersonate
+
+gcloud iam service-accounts add-iam-policy-binding \
+$cvs_serviceAccount \
+--member=user:$(gcloud config get-value account) \
+--role=roles/iam.serviceAccountTokenCreator
+
 export CVS_CAPACITY_INTERVAL=60 # default is 60 minutes. Use 0 for static resizing
 export CVS_CAPACITY_MARGIN=20 # default is 20% on top
-export SERVICE_ACCOUNT_CREDENTIAL=$(cat key.json | base64)
+export SERVICE_ACCOUNT_CREDENTIAL="$cvs_serviceAccount" 
 export CVS_DRY_MODE="whatever" # To allow changes "unset CVS_DRY_MODE"
 python3 ./main.py
 ```
 
 ### PubSub message triggered
 
-The script contains a PubSub subscriber function *CVSCapacityManager_pubsub* for tiggered execution, e.g. via Cloud Scheduler
+The script contains a PubSub subscriber function *CVSCapacityManager_pubsub* for triggered execution, e.g. via Cloud Scheduler
 
 Parameters are passed via environment variables to the Cloud Function.
 
@@ -96,20 +103,26 @@ cd GCP-CVS-CapacityManager
 topic=CVSCapacityManager
 gcloud pubsub topics create $topic
 
-# Set serviceAccount to name of service account with cloudvolumes.admin permissions (see https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US). This can later be used for service account impersonation, but is currently defunct.
-# Provide JSON key to this service account in a file named key.json
-serviceAccount=$(cat key.json | jq -r '.client_email')
+cvs_serviceAccount="<serviceaccount>@<project_ID>.iam.gserviceaccount.com"
+cf_serviceAccount="cloudfunction-user@<project_ID>.iam.gserviceaccount.com"
+
+# Add service account impersonation binding
+gcloud iam service-accounts add-iam-policy-binding \
+$cvs_serviceAccount \
+--member=serviceAccount:$cf_serviceAccount \
+--role=roles/iam.serviceAccountTokenCreator
 
 # Deploy Cloud Function
 # add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to activate volume resizing
 cat <<EOF > .temp.yaml
 CVS_CAPACITY_MARGIN: "20"
 CVS_CAPACITY_INTERVAL: "60"
-SERVICE_ACCOUNT_CREDENTIAL: "$(cat key.json | (base64 -w 0 2>/dev/null || base64 -b 0))"
+SERVICE_ACCOUNT_CREDENTIAL: "$cvs_serviceAccount"
 EOF
+
 # Note: Cloud Functions are only available in specific regions. Choose one you like from
 # https://cloud.google.com/functions/docs/locations
-gcloud functions deploy CVSCapacityManager --entry-point CVSCapacityManager_pubsub --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp.yaml
+gcloud functions deploy CVSCapacityManager --entry-point CVSCapacityManager_pubsub --trigger-topic $topic --runtime=python39 --region=europe-west1 --service-account $cf_serviceAccount --env-vars-file .temp.yaml
 rm .temp.yaml
 
 # Setup Cloud Scheduler
@@ -155,24 +168,29 @@ terraform init
 terraform apply
 cd ..
 
+cvs_serviceAccount="<serviceaccount>@<project_ID>.iam.gserviceaccount.com"
+cf_serviceAccount="cloudfunction-user@<project_ID>.iam.gserviceaccount.com"
+
+# Add service account impersonation binding
+gcloud iam service-accounts add-iam-policy-binding \
+$cvs_serviceAccount \
+--member=serviceAccount:$cf_serviceAccount \
+--role=roles/iam.serviceAccountTokenCreator
+
 # Deploy Cloud Function
 # add "CVS_DRY_MODE: x" line to enable dry mode, omit CVS_DRY_MODE to activate volume resizing
 cat <<EOF > .temp-event.yaml
 CVS_CAPACITY_MARGIN: "25"
-SERVICE_ACCOUNT_CREDENTIAL: "$(cat key.json | (base64 -w 0 2>/dev/null || base64 -b 0))"
+SERVICE_ACCOUNT_CREDENTIAL: "$cvs_serviceAccount"
 EOF
-
-# Set serviceAccount to name of service account with cloudvolumes.admin permissions (see https://cloud.google.com/architecture/partners/netapp-cloud-volumes/api?hl=en_US). This can later be used for service account impersonation, but is currently defunct.
-# Provide JSON key to this service account in a file named key.json
-serviceAccount=$(cat key.json | jq -r '.client_email')
 
 # Note: Cloud Functions are only available in specific regions. Choose one you like from
 # https://cloud.google.com/functions/docs/locations
-gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic CVSCapacityManagerEvents --runtime=python39 --region=europe-west1 --service-account $serviceAccount --env-vars-file .temp-event.yaml
+gcloud functions deploy CVSCapacityEventManager --entry-point CVSCapacityManager_alert_event --trigger-topic CVSCapacityManagerEvents --runtime=python39 --region=europe-west1 --service-account $cf_serviceAccount --env-vars-file .temp-event.yaml
 rm .temp-event.yaml
 ```
 
-After installation, it is recommended to use the Cloud Functions UI to trigger a test run. It will output statistics of all the volumes into the Cloud Function logs. It will not resize volumes. If it works, you know that the credentials provided can be used to sucessfully call CVS API.
+After installation, it is recommended to use the Cloud Functions UI to trigger a test run. It will output statistics of all the volumes into the Cloud Function logs. It will not resize volumes. If it works, you know thae authentication works and can be used to sucessfully do CVS API calls.
 
 ## Notes
 * Setting up Cloud Monitoring for volume space usage is recommended. See [Monitoring cloud volumes](https://cloud.google.com/architecture/partners/netapp-cloud-volumes/monitoring?hl=en_US)

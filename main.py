@@ -69,7 +69,6 @@ def getGoogleProjectNumber(project_id: str) -> Optional[str]:
    logging.error(f"Cannot resolve {project_id} to project number")
    return None
 
-
 # Check if string is base64 encoded
 def isBase64(sb):
     try:
@@ -144,7 +143,7 @@ class BearerAuth(requests.auth.AuthBase):
         expiry = datetime.datetime.now()
         token = None
         service_account_name = None
-        token_life_time = 15*60  # 15 Minutes
+        token_life_time = 5*60  # 5 Minutes
 
         def __init__(self, service_account_name: str):
             self.service_account_name = service_account_name
