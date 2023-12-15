@@ -48,7 +48,7 @@ If the script is executed at the same scheduling interval specified in *interval
 
 Static is a simple, straight forward strategy. It will resize the volume to have *margin* percent free space.
 
-New size will newSize = (current_volume_used) * 100) / (100 - margin).
+New size will newSize = (current_volume_used * 100) / (100 - margin).
 
 ## Usage
 
